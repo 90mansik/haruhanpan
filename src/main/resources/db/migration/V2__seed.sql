@@ -1,0 +1,47 @@
+-- 최초 설치 시 기본 데이터: 2026~2027 공휴일, 예시 루틴
+
+INSERT INTO holidays (hdate, name) VALUES ('2026-01-01', '신정');
+INSERT INTO holidays (hdate, name) VALUES ('2026-02-16', '설날 연휴');
+INSERT INTO holidays (hdate, name) VALUES ('2026-02-17', '설날');
+INSERT INTO holidays (hdate, name) VALUES ('2026-02-18', '설날 연휴');
+INSERT INTO holidays (hdate, name) VALUES ('2026-03-01', '삼일절');
+INSERT INTO holidays (hdate, name) VALUES ('2026-03-02', '대체공휴일');
+INSERT INTO holidays (hdate, name) VALUES ('2026-05-05', '어린이날');
+INSERT INTO holidays (hdate, name) VALUES ('2026-05-24', '부처님오신날');
+INSERT INTO holidays (hdate, name) VALUES ('2026-05-25', '대체공휴일');
+INSERT INTO holidays (hdate, name) VALUES ('2026-06-03', '지방선거');
+INSERT INTO holidays (hdate, name) VALUES ('2026-06-06', '현충일');
+INSERT INTO holidays (hdate, name) VALUES ('2026-08-15', '광복절');
+INSERT INTO holidays (hdate, name) VALUES ('2026-08-17', '대체공휴일');
+INSERT INTO holidays (hdate, name) VALUES ('2026-09-24', '추석 연휴');
+INSERT INTO holidays (hdate, name) VALUES ('2026-09-25', '추석');
+INSERT INTO holidays (hdate, name) VALUES ('2026-09-26', '추석 연휴');
+INSERT INTO holidays (hdate, name) VALUES ('2026-10-03', '개천절');
+INSERT INTO holidays (hdate, name) VALUES ('2026-10-05', '대체공휴일');
+INSERT INTO holidays (hdate, name) VALUES ('2026-10-09', '한글날');
+INSERT INTO holidays (hdate, name) VALUES ('2026-12-25', '성탄절');
+INSERT INTO holidays (hdate, name) VALUES ('2027-01-01', '신정');
+INSERT INTO holidays (hdate, name) VALUES ('2027-02-06', '설날 연휴');
+INSERT INTO holidays (hdate, name) VALUES ('2027-02-07', '설날');
+INSERT INTO holidays (hdate, name) VALUES ('2027-02-08', '설날 연휴');
+INSERT INTO holidays (hdate, name) VALUES ('2027-02-09', '대체공휴일');
+INSERT INTO holidays (hdate, name) VALUES ('2027-03-01', '삼일절');
+INSERT INTO holidays (hdate, name) VALUES ('2027-05-05', '어린이날');
+INSERT INTO holidays (hdate, name) VALUES ('2027-05-13', '부처님오신날');
+INSERT INTO holidays (hdate, name) VALUES ('2027-06-06', '현충일');
+INSERT INTO holidays (hdate, name) VALUES ('2027-08-15', '광복절');
+INSERT INTO holidays (hdate, name) VALUES ('2027-08-16', '대체공휴일');
+INSERT INTO holidays (hdate, name) VALUES ('2027-09-14', '추석 연휴');
+INSERT INTO holidays (hdate, name) VALUES ('2027-09-15', '추석');
+INSERT INTO holidays (hdate, name) VALUES ('2027-09-16', '추석 연휴');
+INSERT INTO holidays (hdate, name) VALUES ('2027-10-03', '개천절');
+INSERT INTO holidays (hdate, name) VALUES ('2027-10-04', '대체공휴일');
+INSERT INTO holidays (hdate, name) VALUES ('2027-10-09', '한글날');
+INSERT INTO holidays (hdate, name) VALUES ('2027-10-11', '대체공휴일');
+INSERT INTO holidays (hdate, name) VALUES ('2027-12-25', '성탄절');
+INSERT INTO holidays (hdate, name) VALUES ('2027-12-27', '대체공휴일');
+
+INSERT INTO routines (id, title, sort_order) VALUES ('r1', '백업(RMAN) 성공 여부 확인', 1);
+INSERT INTO routines (id, title, sort_order) VALUES ('r2', 'alert log 오류(ORA-) 확인', 2);
+INSERT INTO routines (id, title, sort_order) VALUES ('r3', '테이블스페이스·FRA 사용률 확인', 3);
+INSERT INTO routines (id, title, sort_order) VALUES ('r4', '장시간 실행 세션·Lock 확인', 4);

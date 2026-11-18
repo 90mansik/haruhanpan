@@ -1,0 +1,10 @@
+# /etc/caddy/Caddyfile
+# <내 도메인> 을 실제 도메인으로 바꾼다. 인증서 발급·갱신, http→https 리다이렉트는 Caddy 가 자동으로 한다.
+<내 도메인> {
+	encode gzip
+	header Strict-Transport-Security "max-age=31536000"
+	request_body {
+		max_size 20MB
+	}
+	reverse_proxy 127.0.0.1:8765
+}

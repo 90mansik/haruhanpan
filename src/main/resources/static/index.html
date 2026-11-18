@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>하루한판</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="theme-color" content="#ffffff">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="하루한판">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/" title="홈으로">하루<span>한판</span></a>
+    <div class="space-pick">
+      <select id="space-sel" aria-label="보기 범위"></select>
+      <select id="target-sel" class="hidden" aria-label="새 항목 저장 위치" title="새로 추가하는 항목이 저장될 공간"></select>
+      <button class="icon" id="btn-space" title="공간 설정 · 멤버 · 초대" aria-label="공간 설정">⚙</button>
+    </div>
+    <nav class="tabs" id="tabs"></nav>
+    <div class="tools">
+      <span class="save-state" id="save-state"></span>
+      <button class="small hidden" id="btn-pending" title="Google 가입 신청 승인">승인 대기</button>
+      <a class="btn ghost small" href="/" title="홈 (앱 고르기)">🏠<span class="label-text"> 홈</span></a>
+      <button class="ghost small" id="btn-ledger" title="같은 공간의 하루가계부로">💰<span class="label-text"> 하루가계부</span></button>
+      <button class="ghost small" id="btn-export" data-m="내보내기 (JSON)" title="지금 공간의 데이터를 JSON 파일로 저장">내보내기</button>
+      <button class="ghost small" id="btn-import" data-m="가져오기 (JSON)" title="JSON 파일로 지금 공간을 전체 교체 (관리자)">가져오기</button>
+      <input type="file" id="import-file" accept="application/json,.json" class="hidden">
+      <button class="icon" id="btn-theme" data-m="라이트/다크 전환" title="라이트/다크 전환" aria-label="테마 전환">◐</button>
+      <button class="ghost small" id="btn-account" data-m="내 계정" data-m-text title="내 계정"></button>
+      <button class="ghost small" id="btn-logout" data-m="로그아웃">로그아웃</button>
+    </div>
+  </div>
+</header>
+<main id="main"><div class="empty">불러오는 중…</div></main>
+<dialog id="dlg"></dialog>
+<script src="/vendor/highlight/highlight.min.js"></script>
+<script src="/vendor/highlight/dockerfile.min.js"></script>
+<script src="/vendor/highlight/powershell.min.js"></script>
+<script src="/app.js"></script>
+<script src="/menu.js"></script>
+</body>
+</html>

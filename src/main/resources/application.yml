@@ -1,0 +1,76 @@
+# 공통 설정. 기본 프로파일은 dev (로컬 H2). 서버에서는 SPRING_PROFILES_ACTIVE=prod
+spring:
+  application:
+    name: haruhanpan
+  profiles:
+    default: dev
+  flyway:
+    locations: classpath:db/migration
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  address: 127.0.0.1          # 외부 노출은 Caddy 만. 0.0.0.0 으로 바꾸지 말 것
+  port: 8765
+  servlet:
+    session:
+      timeout: 2h
+      cookie:
+        http-only: true
+        # lax: Google 로그인 후 accounts.google.com → 이 사이트로 돌아올 때도 세션 쿠키가 실려야 함.
+        # 변경 요청의 CSRF 방어는 XSRF 토큰이 담당한다.
+        same-site: lax
+  error:
+    include-stacktrace: never
+    include-message: never
+
+haru:
+  data-dir: ./data            # 비밀번호 해시, 로그인 유지 키, 백업 JSON 저장 위치
+  backup-keep-days: 30
+  remember-me-days: 30
+  secure-cookie: false
+  dev-password: ""            # 비어 있으면 data-dir/password.hash 필수
+  # Google 로그인으로 초대 없이 바로 가입할 수 있는 Google Workspace 도메인 (예: mycompany.com, 승인 불필요)
+  google-allowed-domain: ""
+  # 그 외 Google 계정도 가입 신청 가능. 사이트 관리자가 승인해야 쓸 수 있다 (false 면 초대로만 가입)
+  google-open-signup: true
+  # Google 로그인은 아래 환경변수 두 개가 있을 때만 켜진다 (Google Cloud 콘솔 > OAuth 클라이언트)
+  #   SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_GOOGLE_CLIENT_ID
+  #   SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_GOOGLE_CLIENT_SECRET
+
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+  datasource:
+    # Oracle 호환 모드: '' → NULL, DUAL, NVL 등 운영과 같은 동작
+    url: jdbc:h2:file:./data/haruhanpan;MODE=Oracle;DEFAULT_NULL_ORDERING=HIGH
+    username: sa
+    password: ""
+haru:
+  dev-password: haruhanpan-dev   # 로컬 개발 전용. prod 에서는 무시됨
+
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    url: ${ORA_URL}
+    username: ${ORA_USER}
+    password: ${ORA_PASSWORD}
+    hikari:
+      maximum-pool-size: 4
+      minimum-idle: 1
+server:
+  forward-headers-strategy: native   # Caddy 가 붙인 X-Forwarded-For 로 실제 IP 판별
+  servlet:
+    session:
+      cookie:
+        secure: true
+haru:
+  data-dir: ${HARU_DATA_DIR:/var/lib/haruhanpan}
+  secure-cookie: true
+  dev-password: ""

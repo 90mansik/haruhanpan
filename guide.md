@@ -1,0 +1,602 @@
+# My Dashboard 웹 버전 개발 지시서 (AI 개발용)
+
+> 이 문서를 AI 코딩 도구(Claude Code 등)에 그대로 주고 "이 문서대로 개발해줘"라고 지시한다.
+
+> 문서 끝 **부록**에 현재 동작 중인 로컬 버전의 전체 소스가 들어 있다. 화면·디자인·동작은 부록 소스를 **그대로 기준**으로 삼는다.
+
+---
+
+## 0. AI 에게 주는 지시 요약
+
+1. 부록의 현재 소스(로컬 1인용, SQLite, Python 표준 라이브러리 서버, 순수 JS)를 기반으로 **인터넷에 공개되는 개인용 웹 서비스**로 바꾼다.
+2. 화면(디자인·탭 구성·동작)은 **바꾸지 않는다.** 추가되는 화면은 로그인 페이지와 로그아웃 버튼뿐이다.
+3. 저장소를 **Oracle Autonomous Database(Always Free)** 로 바꾼다. 기존 SQLite 저장소는 로컬 개발·테스트용으로 남긴다 (config 로 선택).
+4. **로그인**(사용자 1명, 비밀번호 1개)을 추가한다. 로그인 없이는 화면·API 모두 접근 불가.
+5. **Oracle Cloud Always Free VM** 에서 Caddy(HTTPS) 뒤에 systemd 서비스로 돌린다. 배포 파일과 설치 순서를 함께 만든다.
+6. 프리티어로 충분하도록 **가볍게** 유지한다: 웹 프레임워크·프론트 빌드 도구·CDN 없이, 외부 패키지는 `oracledb` 하나만.
+7. 작업 순서와 완료 기준은 13장, 테스트는 14장을 따른다. 모르는 값(도메인, DB 접속 정보)은 config/환경변수로 빼고 임의로 정하지 않는다.
+
+---
+
+## 1. 목표와 범위
+
+| 항목 | 내용 |
+|---|---|
+| 사용자 | 나 1명 (회원가입 없음) |
+| 접속 | `https://<내 도메인>` - PC·휴대폰 브라우저 |
+| 서버 | Oracle Cloud Infrastructure(OCI) Always Free Compute VM |
+| DB | OCI Always Free Autonomous Database (Transaction Processing 또는 JSON, 23ai/19c 어느 쪽이든) |
+| 비용 | 0원 (Always Free 한도 안) - 도메인 비용만 |
+| 데이터 | 개인 일정·할 일·메모 (회사 정보 없음) |
+| 제외 | 다중 사용자, 회원가입, 비밀번호 찾기 메일, 실시간 동기화(WebSocket), 모바일 앱 |
+
+---
+
+## 2. 현재 앱(로컬 버전) 요약
+
+부록 소스가 정답이다. 아래는 빠르게 파악하기 위한 요약.
+
+### 2.1 구조
+
+```
+my_dashboard/
+├─ app.py         진입점. 기본=pywebview 전용 창, --web=브라우저 모드. config.json 로드
+├─ server.py      ThreadingHTTPServer. 정적 파일 + REST API(1건 단위 upsert/delete). Host/Origin 검사
+├─ store.py       SQLite 저장소. TABLES 가 JS camelCase ↔ DB snake_case 매핑. 일일 백업
+├─ auth.py        (초안) 로그인 모듈 - 아직 server.py 에 연결 안 됨
+├─ static/
+│  ├─ index.html  상단 바 + <main> + <dialog>
+│  ├─ style.css   디자인 전체 (테마 토큰, 라이트/다크)
+│  └─ app.js      순수 JS 단일 파일. 해시 라우터 + 화면별 render 함수
+└─ seed/          최초 실행 시 넣는 공휴일(2026~2027)·기본 루틴
+```
+
+웹 버전에서 **pywebview·PyInstaller 관련 코드(run_window, attach_console, FROZEN/_MEIPASS 처리)는 제거**해도 된다. 서버에서는 `python app.py` 하나로 웹 서버만 뜨면 된다.
+
+### 2.2 화면(탭)과 기능
+
+상단 바: 브랜드 `My Dashboard` · 탭 7개 · 오른쪽에 저장 상태 표시, `내보내기`, `가져오기`, 테마 전환(◐). **웹 버전은 여기에 `로그아웃` 버튼을 추가.**
+
+| 탭(해시) | 기능 |
+|---|---|
+| 홈 `#home` | 오늘 날짜 인사, 통계 카드(지연 / 오늘 마감 / 미완료·진행중(→보드로 이동) / 오늘 루틴 진행률), 집중할 일, 앞으로 14일 일정, 오늘 루틴 체크, D-Day 목록, 고정 메모 |
+| 할 일 `#todo` | 빠른 추가(제목·마감일·우선순위·분류), 필터 칩(미완료 / 진행중 / 오늘·지연 / 7일 이내 / 마감 없음 / 완료 / 전체, 개수 표시), 분류 필터, 검색, 체크로 완료, 클릭으로 수정 대화상자. 진행중 항목은 주황 "진행중" 배지 |
+| 보드 `#board` | 칸반 3열 준비(todo)/진행중(doing)/완료(done). HTML5 드래그로 열 이동·열 안 순서 변경(rank), 열마다 빠른 추가 입력, 분류 필터, 완료 열은 최근 14일만(그 이전은 할 일 탭 '완료' 필터 안내), 카드 클릭=수정 |
+| 달력 `#calendar` | 월간 달력(일=빨강, 토=파랑, 공휴일=빨강+이름), 여러 날 일정, 반복 일정(없음/매일/평일/매주/매월/매년 + 종료일), 할 일 마감 표시, 오른쪽 날짜 패널(그 날 일정·할 일, 일정 추가, 휴일·휴무일 지정/해제) |
+| 루틴 `#routine` | 매일 체크하는 루틴 목록(추가·수정·삭제·순서 변경), 오늘 체크리스트, 최근 기록 표(날짜×루틴, 셀 클릭으로 체크) |
+| 메모 `#notes` | 왼쪽 목록(고정 우선, 최근 수정순) + 오른쪽 편집기(제목·본문), 입력 500ms 후 자동 저장, 고정·삭제 |
+| 스니펫 `#snippets` | 카드 그리드. 제목·분류(자유 입력)·언어(자동 판단/SQL/일반 텍스트)·코드·메모. SQL 은 정규식 기반 구문 강조(키워드·함수·문자열·숫자·주석·힌트·바인드변수·식별자), 복사 버튼, 분류 필터·검색 |
+
+공통 동작:
+- **저장**: 변경 즉시 1건 단위 API 호출. 같은 경로는 디바운스되어 마지막 요청만 전송(`send()`). 창을 닫을 때 대기 중인 PUT 은 `sendBeacon`(POST)으로 전송.
+- **저장 상태**: 상단 `저장 중… / 저장됨 HH:MM:SS / 저장 실패…`.
+- **대화상자**: `openForm({title, fields, values, onSubmit, onDelete})` 로 모든 입력 폼을 공통 처리.
+- **내보내기/가져오기**: 전체 데이터를 JSON 파일로 저장 / 파일로 전체 교체(확인창 후).
+- **테마**: 라이트/다크, localStorage 에 기억. 첫 방문은 OS 설정 따름.
+- **자정 갱신**: 1분마다 날짜 확인, 바뀌면 다시 그림.
+
+### 2.3 상태값 규칙 (할 일)
+
+- `status` ∈ `todo | doing | done`, `done`(bool) 과 항상 일치: `done=true ⇔ status='done'`.
+- 상태 변경은 `applyTodoStatus(t, st)` 한 곳에서: status·done·doneAt 설정, 다른 열로 가면 그 열 맨 끝 rank 부여.
+- 보드 드롭 시 해당 열 카드들에 DOM 순서대로 `(i+1)*1000` rank 를 다시 매기고 **바뀐 카드만** 저장.
+- 불러온 직후·가져오기 직후 `normalizeTodos()` 로 status/done 불일치 보정.
+
+---
+
+## 3. 디자인 시스템 (변경 금지, 그대로 이식)
+
+전체는 부록 `static/style.css`. 핵심 규칙:
+
+### 3.1 색상 토큰
+
+| 토큰 | 라이트 | 다크 | 용도 |
+|---|---|---|---|
+| `--bg` | `#f4f5f7` | `#15171a` | 페이지 배경, 보드 열 배경 |
+| `--panel` | `#fff` | `#1e2125` | 카드·패널·입력창 |
+| `--text` | `#1f2328` | `#e6e8eb` | 본문 |
+| `--muted` | `#6b7280` | `#9aa1a9` | 보조 글자 |
+| `--line` | `#e3e5e8` | `#2e3238` | 테두리·구분선 |
+| `--accent` | `#2563eb` | `#5b8cff` | 주 버튼·선택 탭·포커스 |
+| `--accent-soft` | `#e8efff` | `#233150` | 선택 배경·태그 배경 |
+| `--danger` | `#dc2626` | `#f87171` | 지연·삭제·우선순위 높음 |
+| `--warn` | `#d97706` | `#fbbf24` | 오늘 마감·진행중·우선순위 보통 |
+| `--ok` | `#16a34a` | `#4ade80` | 완료·루틴 체크 |
+| `--sun` / `--sat` | `#dc2626` / `#2563eb` | `#f87171` / `#7aa2ff` | 달력 일·토요일 |
+| `--today` | `#fff7d6` | `#3a3420` | 오늘 칸 강조 |
+| `--shadow` | `0 1px 2px rgba(0,0,0,.06)` | `none` | 카드 그림자 |
+
+SQL 강조 토큰: `--sk`(키워드) `--sf`(함수) `--ss`(문자열) `--sn`(숫자) `--sc`(주석) `--sh`(힌트) `--sb`(바인드변수) `--si`(따옴표 식별자) — 라이트/다크 값은 부록 CSS.
+
+일정 색 팔레트(8색): `#2563eb #16a34a #dc2626 #d97706 #7c3aed #0891b2 #db2777 #6b7280`.
+
+### 3.2 타이포·모양
+
+- 글꼴: `14px/1.5 "Malgun Gothic", "맑은 고딕", system-ui, sans-serif` (웹 버전은 맥·휴대폰을 위해 뒤에 `"Apple SD Gothic Neo", "Noto Sans KR"` 를 system-ui 앞에 추가해도 됨). 코드: `Consolas, "D2Coding", monospace`.
+- 둥근 모서리: 입력·버튼 6px, 패널·카드 10px, 보드 카드 8px, 대화상자 12px, 칩·태그 16px/10px.
+- 버튼 종류: 기본(파랑 채움) / `.ghost`(투명+회색 테두리, hover 시 파랑) / `.danger`(빨강 테두리) / `.icon`(테두리 없음).
+- 상단 바: sticky, 패널색 배경, 아래 구분선. 탭은 선택 시 `accent-soft` 배경 + `accent` 글자 + 굵게.
+- 본문 최대 폭 1280px, 패딩 20px.
+- 우선순위 점: 8px 원(높음=danger, 보통=warn, 낮음=line).
+
+### 3.3 반응형
+
+- 현재: 900px 이하에서 달력·메모·보드가 1열, 빠른 추가는 2열.
+- **웹 버전 추가 요구**(휴대폰에서 쓰기 위함, 디자인 톤은 유지):
+  - 600px 이하: 상단 바는 브랜드+도구 한 줄, 탭은 가로 스크롤 한 줄(`overflow-x:auto; flex-wrap:nowrap`).
+  - 스니펫 카드 최소폭 380px → 600px 이하에서 1열(`minmax(min(380px,100%),1fr)`).
+  - 할 일 행의 `.acts`(hover 로만 보이는 버튼)는 터치 기기(`@media (hover:none)`)에서 항상 보이게.
+  - 보드 드래그는 HTML5 DnD 라 터치에서 안 된다 → 터치 기기에서는 카드 수정 대화상자의 "상태" 선택으로 이동(이미 있음). 추가 구현 불필요, 이 사실만 README 에 적는다.
+  - 가로 스크롤이 생기지 않게 할 것(루틴 기록 표는 자체 `overflow-x:auto` 래퍼).
+
+### 3.4 로그인 페이지 디자인 (신규)
+
+- `static/login.html` (+ 같은 style.css 사용). 화면 중앙 `.panel` 하나, 폭 `min(360px, 92vw)`.
+- 내용: 제목 `My Dashboard`, 비밀번호 입력(type=password, autocomplete=current-password, autofocus), `로그인` 버튼(기본 버튼, 폭 100%), 오류 문구 영역(`--danger`, 12px).
+- 테마: localStorage `theme` 값 또는 OS 설정을 따라 `data-theme` 적용 (메인 화면과 동일 로직).
+- 오류 문구: 401 → "비밀번호가 맞지 않습니다", 429 → "시도가 너무 많습니다. 잠시 후 다시 시도하세요".
+- 성공 시 `location.replace('/')`.
+
+---
+
+## 4. 목표 아키텍처
+
+```
+브라우저 ──HTTPS(443)──▶ [OCI Always Free VM]
+                          Caddy  ── 인증서 자동 발급·갱신, 80→443 리다이렉트
+                            │ reverse_proxy 127.0.0.1:8765
+                          python app.py  (systemd: mydashboard.service, 전용 리눅스 계정)
+                            ├ 로그인 / 세션 쿠키
+                            ├ 정적 파일(static/)
+                            └ REST API ──python-oracledb(thin)──▶ [Autonomous DB Always Free]
+                          /var/lib/mydashboard/  auth.json, backup/*.json
+```
+
+| 결정 | 선택 | 이유 |
+|---|---|---|
+| 웹 서버 | Python 표준 `ThreadingHTTPServer` 유지 + 앞단 Caddy | 사용자 1명이라 충분. 의존성 0. TLS·HTTP 파싱 방어는 Caddy 가 담당 |
+| DB 드라이버 | `oracledb` thin 모드 | Oracle Instant Client 설치 불필요, ARM(Ampere)에서도 동작 |
+| VM | Ampere A1 Flex 1 OCPU / 6GB (Ubuntu 22.04/24.04) 권장. AMD E2.1.Micro(1GB)도 가능 | 앱 메모리 수십 MB |
+| 프론트 | 현재 순수 JS 그대로 | 빌드 도구 없음 |
+| 비밀값 | 환경변수 파일 `/etc/mydashboard.env` (권한 600) | 코드·config.json 에 비밀번호 금지 |
+
+---
+
+## 5. 설정 (config.json + 환경변수)
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8765,
+  "allowed_hosts": ["127.0.0.1", "localhost", "<내 도메인>"],
+  "db": "oracle",
+  "auth": true,
+  "secure_cookie": true,
+  "trust_proxy": true,
+  "data_dir": "/var/lib/mydashboard"
+}
+```
+
+| 키 | 기본값 | 설명 |
+|---|---|---|
+| `db` | `"sqlite"` | `"sqlite"`(로컬 개발) / `"oracle"`(서버) |
+| `auth` | `false` | true 면 로그인 필수. **true 인데 auth.json 이 없으면 서버 시작을 거부**(fail closed) |
+| `secure_cookie` | `false` | HTTPS 뒤에서는 true (쿠키 Secure 속성) |
+| `trust_proxy` | `false` | true 면 클라이언트 IP 를 `X-Forwarded-For` 마지막 값에서 읽음 (Caddy 뒤에서만) |
+| `data_dir` | 앱 폴더/data | auth.json, 백업 저장 위치 |
+
+환경변수 (`/etc/mydashboard.env`):
+
+```
+ORA_USER=MYDASH
+ORA_PASSWORD=...
+ORA_DSN=(description=(retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.ap-chuncheon-1.oraclecloud.com))(connect_data=(service_name=xxxx_mydash_tp.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))
+# 지갑(mTLS) 방식을 쓸 경우에만
+ORA_WALLET_DIR=/var/lib/mydashboard/wallet
+ORA_WALLET_PASSWORD=...
+```
+
+---
+
+## 6. 데이터 모델
+
+### 6.1 JS ↔ DB 매핑 (현재 store.py 의 TABLES 와 동일하게 유지)
+
+| 컬렉션 | 테이블 | 필드(JS → 컬럼, 타입) |
+|---|---|---|
+| todos | TODOS | id, title, due, priority, tag, memo, done(bool), doneAt→done_at, createdAt→created_at, status, rank→rank_no(num) |
+| events | EVENTS | id, title, date→start_date, endDate→end_date, time→start_time, repeat→repeat_rule, until→repeat_until, color, memo, dday(bool) |
+| notes | NOTES | id, title, body, pinned(bool), updatedAt→updated_at |
+| snippets | SNIPPETS | id, title, tag, code, memo, lang, updatedAt→updated_at |
+| routines | ROUTINES | id, title, (sort_order: 배열 순서) |
+| routineLog | ROUTINE_LOG | `{ "YYYY-MM-DD": [routineId, ...] }` ↔ (log_date, routine_id) |
+| holidays | HOLIDAYS | `{ "YYYY-MM-DD": "이름" }` ↔ (hdate, name) |
+
+- 날짜·시각은 현재처럼 **문자열**(`YYYY-MM-DD`, ISO 시각)로 저장한다. JS 쪽 로직을 바꾸지 않기 위함.
+- bool 은 `NUMBER(1)` 0/1, API 응답에서는 JSON true/false.
+- 빈 문자열: **Oracle 은 `''` 를 NULL 로 저장**한다. 조회 시 NULL → `''` 로 바꿔 돌려줘야 JS 가 기존과 똑같이 동작한다 (text 타입 컬럼 전부). 이 처리를 빠뜨리면 화면에 `null` 이 찍힌다.
+
+### 6.2 Oracle DDL (store_oracle.py 가 최초 실행 시 없으면 생성)
+
+```sql
+CREATE TABLE todos (
+  id          VARCHAR2(64)  PRIMARY KEY,
+  title       VARCHAR2(1000 CHAR),
+  due         VARCHAR2(10),
+  priority    VARCHAR2(10),
+  tag         VARCHAR2(100 CHAR),
+  memo        VARCHAR2(4000 CHAR),
+  done        NUMBER(1) DEFAULT 0 NOT NULL,
+  done_at     VARCHAR2(40),
+  created_at  VARCHAR2(40),
+  status      VARCHAR2(10) DEFAULT 'todo' NOT NULL CHECK (status IN ('todo','doing','done')),
+  rank_no     NUMBER DEFAULT 0
+);
+CREATE INDEX ix_todos_due ON todos(due);
+CREATE TABLE events (
+  id           VARCHAR2(64) PRIMARY KEY,
+  title        VARCHAR2(1000 CHAR),
+  start_date   VARCHAR2(10),
+  end_date     VARCHAR2(10),
+  start_time   VARCHAR2(5),
+  repeat_rule  VARCHAR2(20),
+  repeat_until VARCHAR2(10),
+  color        VARCHAR2(20),
+  memo         VARCHAR2(4000 CHAR),
+  dday         NUMBER(1) DEFAULT 0 NOT NULL
+);
+CREATE TABLE notes (
+  id          VARCHAR2(64) PRIMARY KEY,
+  title       VARCHAR2(1000 CHAR),
+  body        CLOB,
+  pinned      NUMBER(1) DEFAULT 0 NOT NULL,
+  updated_at  VARCHAR2(40)
+);
+CREATE TABLE snippets (
+  id          VARCHAR2(64) PRIMARY KEY,
+  title       VARCHAR2(1000 CHAR),
+  tag         VARCHAR2(100 CHAR),
+  code        CLOB,
+  memo        VARCHAR2(4000 CHAR),
+  lang        VARCHAR2(20),
+  updated_at  VARCHAR2(40)
+);
+CREATE TABLE routines (
+  id          VARCHAR2(64) PRIMARY KEY,
+  title       VARCHAR2(1000 CHAR),
+  sort_order  NUMBER DEFAULT 0
+);
+CREATE TABLE routine_log (
+  log_date    VARCHAR2(10),
+  routine_id  VARCHAR2(64),
+  CONSTRAINT pk_routine_log PRIMARY KEY (log_date, routine_id)
+);
+CREATE TABLE holidays (
+  hdate  VARCHAR2(10) PRIMARY KEY,
+  name   VARCHAR2(200 CHAR)
+);
+```
+
+- 컬럼 이름은 처음부터 Oracle 예약어(`DATE`, `TIME`, `RANK`, `REPEAT` 등)를 피해 지었으므로 그대로 쓴다.
+- 테이블이 비어 있으면 seed(공휴일·기본 루틴)를 넣는다 (현재 store.init 과 동일).
+- 앞으로 컬럼이 추가되면 현재 SQLite 의 `ADDED_COLUMNS` 방식처럼 `USER_TAB_COLUMNS` 를 확인해 `ALTER TABLE ADD` 한다.
+
+### 6.3 DB 계정
+
+ADMIN 으로 앱을 돌리지 않는다. Database Actions(SQL 워크시트)에서 ADMIN 으로 한 번 실행:
+
+```sql
+CREATE USER mydash IDENTIFIED BY "<강한 비밀번호>" DEFAULT TABLESPACE data QUOTA 1G ON data;
+GRANT CREATE SESSION, CREATE TABLE TO mydash;
+```
+
+---
+
+## 7. 저장소 구현 (store_oracle.py)
+
+`store.py` 의 `Store` 와 **같은 공개 메서드·반환 형태**로 만든다. server.py 는 어느 저장소인지 몰라야 한다.
+
+| 메서드 | Oracle 구현 메모 |
+|---|---|
+| `init(data_dir, seed_dir)` | 테이블 없으면 DDL 실행(`USER_TABLES` 확인), 비어 있으면 seed 입력, todos status/done 보정 UPDATE |
+| `all()` | 7개 테이블 조회 → 현재와 같은 dict. CLOB 은 문자열로(`oracledb.defaults.fetch_lobs = False`), NULL→'' |
+| `upsert(coll, item)` | `MERGE INTO t USING (SELECT :id id FROM dual) s ON (t.id = s.id) WHEN MATCHED THEN UPDATE ... WHEN NOT MATCHED THEN INSERT ...`. 알 수 없는 필드는 무시, 타입 변환(bool→0/1, num→float) |
+| `delete(coll, id)` | routines 삭제 시 routine_log 의 해당 루틴도 삭제 (한 트랜잭션) |
+| `set_routine_order(ids)` | executemany 로 sort_order 갱신 |
+| `set_routine_log(date, rid, on)` | on: MERGE(없으면 INSERT) / off: DELETE |
+| `set_holiday(date, name)` | name 있으면 MERGE, 없으면 DELETE |
+| `replace_all(data)` | **교체 전 현재 데이터를 JSON 백업 파일로 저장** → 한 트랜잭션으로 전체 DELETE + INSERT(executemany) → 실패 시 rollback |
+| `backup_once_a_day()` | `data_dir/backup/dashboard_YYYY-MM-DD.json` 에 `all()` 결과 저장, 30일 지난 파일 삭제 |
+
+공통 규칙:
+- 연결: `oracledb.create_pool(user, password, dsn, min=1, max=4, increment=1)` (+ 지갑 방식이면 `config_dir/wallet_location/wallet_password`). 요청마다 `pool.acquire()`.
+- 모든 SQL 은 **바인드 변수**(`:name`). 테이블·컬럼 이름은 TABLES 화이트리스트에서만 가져와 문자열에 넣는다.
+- 쓰기는 명시적 commit, 예외 시 rollback.
+- DB 가 정지(7일 미사용 자동 정지)되어 연결이 안 되면 API 는 503 + `{"error":"db unavailable"}` 를 돌려주고, 화면 상태줄에 "DB 에 연결할 수 없습니다" 가 뜨게 한다.
+- **연결 유지(keepalive)**: 서버 스레드에서 12시간마다 `SELECT 1 FROM dual` 실행 + 하루 한 번 `backup_once_a_day()`. (Always Free ADB 는 7일간 활동이 없으면 정지되고, 정지 후 90일 지나면 삭제된다. 이 쿼리가 '활동'으로 인정되는지는 배포 후 OCI 콘솔에서 확인할 것 — 확인 전까지는 정지 알림을 받으면 콘솔에서 수동 시작.)
+
+SQLite 저장소(`store.py`)는 로컬 개발·테스트용으로 유지하고, 같은 테스트를 두 저장소에 모두 돌릴 수 있게 한다.
+
+---
+
+## 8. API
+
+현재 API 는 그대로 두고 인증 관련만 추가한다. 모두 JSON.
+
+| 메서드 | 경로 | 인증 | 설명 |
+|---|---|---|---|
+| POST | `/api/login` `{password}` | 불필요 | 성공 200 + Set-Cookie / 실패 401 / 시도 초과 429 |
+| POST | `/api/logout` | 필요 | 쿠키 삭제 |
+| GET | `/api/session` | 불필요 | `{auth: bool, loggedIn: bool}` (로그아웃 버튼 표시 여부 판단용) |
+| GET | `/api/all` | 필요 | 전체 조회 |
+| PUT/POST | `/api/{todos\|events\|notes\|snippets\|routines}/{id}` | 필요 | 1건 upsert (POST 는 sendBeacon 용) |
+| DELETE | `/api/{컬렉션}/{id}` | 필요 | 1건 삭제 |
+| PUT | `/api/routines/order` `[id,...]` | 필요 | 루틴 순서 |
+| PUT/DELETE | `/api/routineLog/{date}/{rid}` | 필요 | 루틴 체크/해제 |
+| PUT/DELETE | `/api/holidays/{date}` `{name}` | 필요 | 휴일 지정/해제 |
+| POST | `/api/import` | 필요 | 전체 교체 |
+
+입력 검증(현재와 동일): id `^[A-Za-z0-9_-]{1,64}$`, 날짜 `^\d{4}-\d{2}-\d{2}$`, body 형태 검사, 400/404 응답.
+
+---
+
+## 9. 로그인·보안 설계
+
+부록의 `auth.py` 초안을 사용·보완한다.
+
+### 9.1 비밀번호
+
+- `python app.py --set-password` → getpass 로 두 번 입력받아 `data_dir/auth.json` 에 저장 (scrypt n=2^14,r=8,p=1, salt 16바이트, 권한 600).
+- 저장 시 쿠키 서명 키(secret)도 새로 만든다 → **비밀번호를 바꾸면 기존 로그인 모두 무효**.
+- 최소 길이 12자 검사.
+
+### 9.2 세션
+
+- 쿠키 `md_session = "<만료시각>.<HMAC-SHA256 서명>"`, `HttpOnly; SameSite=Strict; Path=/; Max-Age=30일; Secure`(secure_cookie=true 일 때).
+- 서버 재시작해도 유지(서명 방식이라 서버 메모리에 세션 저장 안 함).
+- 사용 중 자동 연장: 발급 후 하루 이상 지난 쿠키로 요청이 오면 응답에 새 쿠키를 실어 보냄.
+- 로그아웃은 쿠키 삭제. (모든 기기 강제 로그아웃 = 비밀번호 재설정)
+
+### 9.3 접근 제어 (server.py dispatch 맨 앞)
+
+1. Host/Origin 검사 (현재 로직 유지, allowed_hosts 에 도메인 추가).
+2. `auth=true` 일 때 로그인 없이 허용하는 경로: `GET /login.html`, `GET /style.css`, `GET /favicon.ico`, `POST /api/login`, `GET /api/session`. 나머지는:
+   - `/api/*` → 401 `{"error":"login required"}`
+   - 그 외 GET → 302 `Location: /login.html`
+3. 상태를 바꾸는 요청(PUT/POST/DELETE)은 Origin 헤더가 있으면 반드시 허용 도메인이어야 함(현재 로직) + SameSite=Strict 쿠키 → CSRF 방지.
+
+### 9.4 로그인 시도 제한
+
+- IP별 15분에 5회 실패, 전체 1시간에 30회 실패 시 429. 실패한 요청에는 응답 전 0.5~1초 지연.
+- IP 는 `trust_proxy=true` 일 때 `X-Forwarded-For` 의 마지막 값(Caddy 가 붙인 값), 아니면 소켓 주소.
+- 로그인 성공·실패를 서버 로그에 남김(IP, 시각). 비밀번호는 절대 로그에 남기지 않음.
+
+### 9.5 응답 보안 헤더 (모든 응답)
+
+```
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: same-origin
+Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'
+Cache-Control: no-store   (현재와 동일)
+```
+
+(HSTS 는 Caddy 에서 설정. app.js 에 인라인 스크립트가 없으므로 script-src 'self' 로 충분 — login.html 도 스크립트를 별도 파일 `login.js` 로 둘 것.)
+
+### 9.6 기타
+
+- 요청 본문 최대 20MB(가져오기 고려), 넘으면 413.
+- 디렉터리 목록 응답 금지(SimpleHTTPRequestHandler 의 list_directory 를 404 로 막기).
+- 오류 응답에 스택트레이스·SQL 노출 금지(현재처럼 `server error` 만).
+
+### 9.7 프론트 변경 (app.js)
+
+- `request()` 에서 401 이면 상태줄에 "로그인이 만료되었습니다 — 새로고침 후 다시 로그인하세요" 표시 (대기 중인 메모 내용을 잃지 않도록 **자동 이동하지 않는다**).
+- `init()` 에서 `/api/all` 이 401 이면 `location.replace('/login.html')`.
+- `/api/session` 결과 `auth=true` 면 상단 도구 영역에 `로그아웃`(ghost 버튼) 표시 → `POST /api/logout` 후 login.html 로 이동.
+- 서버 연결 실패 문구의 "MyDashboard.exe 로 다시 실행하세요" 는 "서버에 연결할 수 없습니다" 로 변경.
+
+---
+
+## 10. 배포 (OCI)
+
+### 10.1 OCI 준비
+
+1. Always Free 계정. (가능하면 **Pay As You Go 로 업그레이드** — 무료 한도 안이면 0원이고, 유휴 Always Free VM 회수 대상에서 빠진다. 업그레이드 안 하면 7일간 CPU·네트워크·메모리 사용률이 매우 낮은 VM 은 회수될 수 있음.)
+2. Autonomous Database 생성: Always Free 체크, 워크로드 Transaction Processing.
+   - 네트워크: "보안 액세스: 허용된 IP 및 VCN" 선택 → VM 의 공인 IP 만 허용. 이 경우 mTLS 필수 해제 가능 → **지갑 없이 TLS 접속**(ORA_DSN 에 TLS 접속 문자열).
+   - 또는 mTLS 유지 + 지갑 다운로드(thin 모드는 지갑의 `ewallet.pem`, `tnsnames.ora` 사용).
+3. Compute 인스턴스: Ampere A1 Flex 1 OCPU/6GB, Ubuntu 24.04, 공인 IP.
+4. VCN 보안 목록(Security List)에 수신 TCP 80, 443 허용 (22 는 내 IP 만 권장).
+5. **VM 내부 방화벽도 열어야 함** (OCI Ubuntu 이미지는 iptables 로 막혀 있음):
+
+   ```bash
+   sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+   sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+   sudo netfilter-persistent save
+   ```
+
+
+   (Oracle Linux 이미지면 `firewall-cmd --permanent --add-service=http --add-service=https && firewall-cmd --reload`)
+6. 도메인 DNS 에 A 레코드 → VM 공인 IP.
+
+### 10.2 서버 설치
+
+```bash
+sudo apt update && sudo apt install -y python3-venv caddy
+sudo useradd --system --home /opt/mydashboard --shell /usr/sbin/nologin mydash
+sudo mkdir -p /opt/mydashboard /var/lib/mydashboard && sudo chown mydash: /var/lib/mydashboard
+# 소스 복사 (git clone 또는 scp) → /opt/mydashboard
+sudo python3 -m venv /opt/mydashboard/venv
+sudo /opt/mydashboard/venv/bin/pip install oracledb
+sudo -u mydash /opt/mydashboard/venv/bin/python /opt/mydashboard/app.py --set-password
+```
+
+### 10.3 만들어야 할 배포 파일 (`deploy/` 폴더)
+
+`deploy/Caddyfile`
+
+```
+<내 도메인> {
+    encode gzip
+    header Strict-Transport-Security "max-age=31536000"
+    reverse_proxy 127.0.0.1:8765
+}
+```
+
+`deploy/mydashboard.service`
+
+```ini
+[Unit]
+Description=My Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mydash
+WorkingDirectory=/opt/mydashboard
+EnvironmentFile=/etc/mydashboard.env
+ExecStart=/opt/mydashboard/venv/bin/python app.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mydashboard
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`deploy/mydashboard.env.example` — 실제 값은 `/etc/mydashboard.env` (`chmod 600`, 소유자 root)
+
+`deploy/DEPLOY.md` — 10장 내용을 순서대로 따라 할 수 있는 체크리스트 + 업데이트 방법(소스 교체 → `systemctl restart mydashboard`) + 로그 보기(`journalctl -u mydashboard -f`).
+
+### 10.4 백업
+
+- 앱이 매일 JSON 백업(7장) → `/var/lib/mydashboard/backup/` 30일.
+- 서버 밖 보관: 화면의 `내보내기` 로 가끔 내 PC 에 저장 (README 에 안내). 자동화가 필요하면 OCI Object Storage(Always Free 20GB)로 올리는 스크립트를 선택 과제로.
+
+---
+
+## 11. 데이터 이관 (선택)
+
+로컬 버전에 쓰던 개인 데이터가 있으면: 로컬 앱 `내보내기` → JSON 파일 → 웹 버전 로그인 후 `가져오기`. 별도 이관 스크립트는 만들지 않는다.
+
+---
+
+## 12. 하지 말 것
+
+- 웹 프레임워크(Flask/Django/FastAPI), ORM, 프론트 프레임워크·번들러·CDN 도입 금지 (가볍게 유지, 프리티어).
+- 화면 디자인·문구·탭 구성 임의 변경 금지 (3.3 반응형 보완과 로그인/로그아웃만 추가).
+- 비밀번호·DB 접속 정보를 코드, config.json, git 에 넣지 않는다. `.gitignore` 에 `data/`, `*.env`, `wallet/`, `config.json` 추가.
+- 앱을 0.0.0.0 으로 바인딩하지 않는다 (Caddy 만 외부에 노출).
+- 문자열 연결로 SQL 값 넣기 금지 (바인드 변수만).
+
+---
+
+## 13. 작업 순서와 완료 기준
+
+| 단계 | 작업 | 완료 기준 |
+|---|---|---|
+| 1 | 부록 소스로 프로젝트 복원, pywebview/PyInstaller 코드 제거, `python app.py` 로 로컬 웹 실행 | 브라우저에서 7개 탭이 현재와 동일하게 동작 |
+| 2 | config 키 추가(5장), 보안 헤더·본문 크기 제한·디렉터리 목록 차단 | 기존 기능 회귀 없음 |
+| 3 | auth.py 연결, `--set-password`, login.html/login.js, 로그아웃 버튼, 401 처리 | 14장 로그인 테스트 통과 (SQLite 로) |
+| 4 | 반응형 보완(3.3) | 375px 폭에서 가로 스크롤 없음, 모든 탭 사용 가능 |
+| 5 | store_oracle.py + config `db` 선택 | 로컬에서 Oracle(ADB 또는 Docker `gvenzl/oracle-free`)로 14장 저장소 테스트 통과 |
+| 6 | keepalive·일일 JSON 백업 | 백업 파일 생성 확인 |
+| 7 | deploy/ 파일, DEPLOY.md, README 갱신 | 문서만 보고 새 VM 에 설치 가능 |
+| 8 | OCI 배포 | `https://<도메인>` 로그인 후 전체 기능 동작, http→https 리다이렉트, 인증서 정상 |
+
+---
+
+## 14. 테스트
+
+자동 테스트는 `tests/` 에 표준 `unittest` 로 (외부 패키지 없이). 서버를 임시 포트·임시 데이터 폴더로 띄우고 `urllib` 로 호출한다.
+
+**로그인**
+
+- [ ] 로그인 없이 `/` → 302 `/login.html`, `/api/all` → 401
+- [ ] 틀린 비밀번호 → 401, 같은 IP 6번째 → 429
+- [ ] 맞는 비밀번호 → Set-Cookie(HttpOnly, SameSite=Strict, secure_cookie 시 Secure) → `/api/all` 200
+- [ ] 위조·만료 쿠키 → 401
+- [ ] `--set-password` 재실행 후 기존 쿠키 → 401
+- [ ] 다른 Origin 에서 PUT → 403
+- [ ] auth=true + auth.json 없음 → 서버가 시작하지 않고 안내 문구 출력
+
+**저장소** (SQLite·Oracle 공통으로 같은 테스트)
+
+- [ ] 7개 컬렉션 upsert → all() 에 반영, 같은 id 재전송 시 수정
+- [ ] 빈 문자열 필드가 all() 에서 `''` 로 돌아옴 (Oracle NULL 처리)
+- [ ] 긴 메모 본문(10만 자)·스니펫 코드 CLOB 저장/조회
+- [ ] 루틴 삭제 시 루틴 기록도 삭제
+- [ ] import 중 오류 → 기존 데이터 그대로(rollback), 교체 전 백업 파일 생성
+- [ ] todos status/done 보정
+
+**화면** (수동, 브라우저)
+
+- [ ] 7개 탭 기능 (2.2 표 기준), 보드 드래그 후 새로고침해도 순서 유지
+- [ ] 라이트/다크 테마, 로그인 페이지 테마 동일
+- [ ] 휴대폰 폭(375px)에서 사용 가능
+
+---
+
+## 부록. 현재 로컬 버전 전체 소스
+
+아래 파일을 같은 경로로 만들면 현재 로컬 버전이 그대로 복원된다 (`python app.py --web` 로 실행, pywebview 없이도 --web 모드는 동작). `auth.py` 는 웹 버전을 위해 만든 초안이며 아직 어디에도 연결되어 있지 않다.
+
+> ⚠️ **원본 손상 주의 (2026-11-05 정리 시 추가)**: 이 문서는 복사 과정에서 줄바꿈이 모두 사라진 상태였다. 본문(0~14장)은 복원했지만, 아래 부록 코드는 줄 구조를 기계적으로 되살릴 수 없어(예: Python 의 `#` 주석 뒤 코드가 한 줄로 붙음, `&amp;` 같은 HTML 엔티티가 풀림) **한 줄 그대로** 두었다. 실제 개발은 원본 소스 파일을 기준으로 한다.
+
+### `app.py`
+
+````python
+""" My Dashboard 실행 진입점   MyDashboard.exe            전용 창(pywebview)으로 실행 - 창을 닫으면 종료   MyDashboard.exe --web      브라우저로 실행 - 콘솔 창을 닫으면 종료   python app.py [--web]      개발 시 동일 설정: config.json (exe 옆, 없으면 기본값으로 생성) 데이터: data/dashboard.db, 일일 백업 data/backup/ """ import argparse import json import sys import threading import webbrowser from pathlib import Path from server import make_server from store import Store FROZEN = getattr(sys, "frozen", False) # exe 로 실행하면 데이터·설정은 exe 옆에, 화면 파일은 exe 내부(_MEIPASS)에서 읽음 BASE_DIR = Path(sys.executable).parent if FROZEN else Path(__file__).resolve().parent RES_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR)) DATA_DIR = BASE_DIR / "data" CONFIG_PATH = BASE_DIR / "config.json" DEFAULT_CONFIG = {     # 서버에 올릴 때: host 를 "0.0.0.0", allowed_hosts 에 서버 주소/도메인 추가 (로그인 기능 먼저 필요)     "host": "127.0.0.1",     "port": 8765,     "allowed_hosts": ["127.0.0.1", "localhost"], } def load_config():     if not CONFIG_PATH.exists():         CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2), encoding="utf-8")         return dict(DEFAULT_CONFIG)     return {**DEFAULT_CONFIG, **json.loads(CONFIG_PATH.read_text(encoding="utf-8"))} def attach_console():     """--web 실행 시 콘솔 창을 보여줌 (닫으면 종료)     exe 는 콘솔 부트로더 + --hide-console hide-early 로 빌드되어 콘솔이 숨겨진 채 시작하므로 다시 표시.     (창 모드 부트로더는 COMCTL32 v6 를 요구해 일부 PC 에서 '오디날 380' 오류로 실행되지 않음)     """     if sys.platform == "win32":         import ctypes         k32 = ctypes.windll.kernel32         hwnd = k32.GetConsoleWindow()         if hwnd:             ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW             k32.SetConsoleTitleW("My Dashboard (web)")             return     if sys.stdout is not None:         return     if sys.platform == "win32":         if k32.AllocConsole():             sys.stdout = open("CONOUT$", "w", encoding="utf-8")             sys.stderr = sys.stdout             k32.SetConsoleTitleW("My Dashboard (web)")             return     sys.stdout = sys.stderr = open(DATA_DIR / "app.log", "a", encoding="utf-8") def run_web(store, cfg, port, open_browser):     attach_console()     server = make_server(cfg["host"], port, RES_DIR / "static", store, cfg["allowed_hosts"])     url = f"http://127.0.0.1:{server.server_address[1]}/"     print(f"My Dashboard 실행 중: {url}")     print(f"데이터: {store.db_path}")     print("종료하려면 이 창을 닫거나 Ctrl+C")     if open_browser:         threading.Timer(0.5, lambda: webbrowser.open(url)).start()     try:         server.serve_forever()     except KeyboardInterrupt:         pass def run_window(store, cfg):     import webview     # 창 모드는 항상 이 PC 전용 + 비어 있는 포트 자동 선택 (--web 실행과 충돌하지 않도록)     server = make_server("127.0.0.1", 0, RES_DIR / "static", store, ["127.0.0.1", "localhost"])     threading.Thread(target=server.serve_forever, daemon=True).start()     url = f"http://127.0.0.1:{server.server_address[1]}/"     webview.settings["ALLOW_DOWNLOADS"] = True  # 내보내기(JSON 저장) 허용     webview.create_window("My Dashboard", url, width=1360, height=900, min_size=(900, 600))     # private_mode=False: 테마 등 화면 설정(localStorage)이 다음 실행에도 유지되도록     webview.start(private_mode=False, storage_path=str(DATA_DIR / "webview"))     server.shutdown() def main():     ap = argparse.ArgumentParser(description="My Dashboard")     ap.add_argument("--web", action="store_true", help="브라우저로 실행")     ap.add_argument("--port", type=int, help="--web 포트 (기본: config.json)")     ap.add_argument("--no-browser", action="store_true", help="--web 실행 시 브라우저 자동 열기 안 함")     args = ap.parse_args()     DATA_DIR.mkdir(exist_ok=True)     cfg = load_config()     store = Store(DATA_DIR / "dashboard.db", DATA_DIR / "backup")     msg = store.init(DATA_DIR, RES_DIR / "seed")     if not args.web:         try:             run_window(store, cfg)             return         except Exception as e:  # pywebview/WebView2 사용 불가 시 브라우저로 대체             attach_console()             print(f"전용 창을 열 수 없어 브라우저로 실행합니다: {e!r}")     if msg:         attach_console()         print(msg)     run_web(store, cfg, args.port or cfg["port"], not args.no_browser) if __name__ == "__main__":     main()
+````
+
+### `server.py`
+
+````python
+""" HTTP 서버 (Python 표준 라이브러리) - 정적 화면 + REST API API (모두 JSON)   GET    /api/all                          전체 조회   PUT    /api/{todos|events|notes|snippets|routines}/{id}   1건 추가/수정(upsert)   POST   (위와 동일 경로)                   upsert - 창 닫을 때 sendBeacon 용   DELETE /api/{컬렉션}/{id}                 1건 삭제   PUT    /api/routines/order               루틴 순서 [id, ...]   PUT    /api/routineLog/{날짜}/{루틴id}     루틴 체크 / DELETE 해제   PUT    /api/holidays/{날짜}  {"name":..}  휴일 지정 / DELETE 해제   POST   /api/import                       전체 교체 (가져오기) """ import json import re from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer from urllib.parse import unquote from store import TABLES ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$") DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$") class ApiError(Exception):     def __init__(self, status, msg):         super().__init__(msg)         self.status = status def make_server(host, port, static_dir, store, allowed_hosts):     allowed = {h.lower() for h in allowed_hosts}     class Handler(SimpleHTTPRequestHandler):         def __init__(self, *a, **kw):             super().__init__(*a, directory=str(static_dir), **kw)         def log_message(self, fmt, *args):             if self.command != "GET":                 super().log_message(fmt, *args)         def end_headers(self):             self.send_header("Cache-Control", "no-store")             super().end_headers()         def send_json(self, value, status=200):             body = json.dumps(value, ensure_ascii=False).encode("utf-8")             self.send_response(status)             self.send_header("Content-Type", "application/json; charset=utf-8")             self.send_header("Content-Length", str(len(body)))             self.end_headers()             self.wfile.write(body)         def host_allowed(self):             # 허용하지 않은 주소/다른 사이트에서 온 요청 차단 (DNS rebinding·CSRF 방지)             host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()             if host not in allowed:                 return False             origin = self.headers.get("Origin")             if origin and origin != "null":                 o_host = origin.split("//", 1)[-1].rsplit(":", 1)[0].strip("[]").lower()                 if o_host not in allowed:                     return False             return True         def read_body(self):             try:                 length = int(self.headers.get("Content-Length") or 0)                 return json.loads(self.rfile.read(length).decode("utf-8")) if length else None             except (ValueError, UnicodeDecodeError):                 raise ApiError(400, "invalid json")         def handle_api(self, method):             parts = [unquote(p) for p in self.path.split("?", 1)[0].split("/")[2:]]             if method == "GET" and parts == ["all"]:                 return store.all()             body = self.read_body() if method in ("PUT", "POST") else None             if method == "POST" and parts == ["import"]:                 if not isinstance(body, dict):                     raise ApiError(400, "object required")                 store.replace_all(body)                 return {"ok": True}             if method == "PUT" and parts == ["routines", "order"]:                 if not isinstance(body, list):                     raise ApiError(400, "list required")                 store.set_routine_order([str(x) for x in body])                 return {"ok": True}             if len(parts) == 3 and parts[0] == "routineLog" and method in ("PUT", "DELETE"):                 if not DATE_RE.match(parts[1]) or not ID_RE.match(parts[2]):                     raise ApiError(400, "bad key")                 store.set_routine_log(parts[1], parts[2], method == "PUT")                 return {"ok": True}             if len(parts) == 2 and parts[0] == "holidays" and method in ("PUT", "DELETE"):                 if not DATE_RE.match(parts[1]):                     raise ApiError(400, "bad date")                 name = (body or {}).get("name", "").strip() if method == "PUT" else ""                 store.set_holiday(parts[1], name)                 return {"ok": True}             if len(parts) == 2 and parts[0] in TABLES:                 coll, item_id = parts                 if not ID_RE.match(item_id):                     raise ApiError(400, "bad id")                 if method in ("PUT", "POST"):                     if not isinstance(body, dict):                         raise ApiError(400, "object required")                     body["id"] = item_id                     store.upsert(coll, body)                     return {"ok": True}                 if method == "DELETE":                     store.delete(coll, item_id)                     return {"ok": True}             raise ApiError(404, "not found")         def dispatch(self, method):             if not self.host_allowed():                 return self.send_json({"error": "forbidden"}, 403)             if not self.path.startswith("/api/"):                 if method == "GET":                     return super().do_GET()                 return self.send_json({"error": "method not allowed"}, 405)             try:                 return self.send_json(self.handle_api(method))             except ApiError as e:                 return self.send_json({"error": str(e)}, e.status)             except Exception as e:  # DB 오류 등은 화면에 '저장 실패'로 보이도록                 self.log_error("API error: %r", e)                 return self.send_json({"error": "server error"}, 500)         def do_GET(self):             self.dispatch("GET")         def do_PUT(self):             self.dispatch("PUT")         def do_POST(self):             self.dispatch("POST")         def do_DELETE(self):             self.dispatch("DELETE")     return ThreadingHTTPServer((host, port), Handler)
+````
+
+### `store.py`
+
+````python
+""" SQLite 저장소 - 화면(JS)은 camelCase 필드, DB 는 snake_case 컬럼 → TABLES 에서 매핑 - 나중에 Oracle/PostgreSQL 로 옮길 때는 이 파일만 바꾸면 됨   (주로 바뀌는 곳: 접속 드라이버, upsert 구문[Oracle 은 MERGE], 파라미터 표기 ? → :1) """ import datetime as dt import json import shutil import sqlite3 import threading from contextlib import contextmanager from pathlib import Path # 컬렉션 → (테이블명, [(JS 필드, 컬럼, 타입)]) / 첫 컬럼이 PK TABLES = {     "todos": ("todos", [         ("id", "id", "text"), ("title", "title", "text"), ("due", "due", "text"),         ("priority", "priority", "text"), ("tag", "tag", "text"), ("memo", "memo", "text"),         ("done", "done", "bool"), ("doneAt", "done_at", "text"), ("createdAt", "created_at", "text"),         ("status", "status", "text"), ("rank", "rank_no", "num"),     ]),     "events": ("events", [         ("id", "id", "text"), ("title", "title", "text"), ("date", "start_date", "text"),         ("endDate", "end_date", "text"), ("time", "start_time", "text"), ("repeat", "repeat_rule", "text"),         ("until", "repeat_until", "text"), ("color", "color", "text"), ("memo", "memo", "text"),         ("dday", "dday", "bool"),     ]),     "notes": ("notes", [         ("id", "id", "text"), ("title", "title", "text"), ("body", "body", "text"),         ("pinned", "pinned", "bool"), ("updatedAt", "updated_at", "text"),     ]),     "snippets": ("snippets", [         ("id", "id", "text"), ("title", "title", "text"), ("tag", "tag", "text"),         ("code", "code", "text"), ("memo", "memo", "text"), ("lang", "lang", "text"),         ("updatedAt", "updated_at", "text"),     ]),     "routines": ("routines", [         ("id", "id", "text"), ("title", "title", "text"),     ]), } DDL = """ CREATE TABLE IF NOT EXISTS todos (   id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', due TEXT DEFAULT '', priority TEXT DEFAULT 'mid',   tag TEXT DEFAULT '', memo TEXT DEFAULT '', done INTEGER DEFAULT 0, done_at TEXT DEFAULT '', created_at TEXT DEFAULT '',   status TEXT DEFAULT 'todo', rank_no REAL DEFAULT 0 ); CREATE INDEX IF NOT EXISTS ix_todos_due ON todos(due); CREATE TABLE IF NOT EXISTS events (   id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', start_date TEXT NOT NULL, end_date TEXT DEFAULT '',   start_time TEXT DEFAULT '', repeat_rule TEXT DEFAULT 'none', repeat_until TEXT DEFAULT '',   color TEXT DEFAULT '', memo TEXT DEFAULT '', dday INTEGER DEFAULT 0 ); CREATE TABLE IF NOT EXISTS notes (   id TEXT PRIMARY KEY, title TEXT DEFAULT '', body TEXT DEFAULT '', pinned INTEGER DEFAULT 0, updated_at TEXT DEFAULT '' ); CREATE TABLE IF NOT EXISTS snippets (   id TEXT PRIMARY KEY, title TEXT DEFAULT '', tag TEXT DEFAULT '', code TEXT DEFAULT '', memo TEXT DEFAULT '',   lang TEXT DEFAULT '', updated_at TEXT DEFAULT '' ); CREATE TABLE IF NOT EXISTS routines (   id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', sort_order INTEGER DEFAULT 0 ); CREATE TABLE IF NOT EXISTS routine_log (   log_date TEXT NOT NULL, routine_id TEXT NOT NULL, PRIMARY KEY (log_date, routine_id) ); CREATE TABLE IF NOT EXISTS holidays (   hdate TEXT PRIMARY KEY, name TEXT NOT NULL ); """ # 기존 DB 에 나중에 추가된 컬럼 (없으면 ALTER TABLE ADD COLUMN) ADDED_COLUMNS = [     ("snippets", "lang", "TEXT DEFAULT ''"),     ("todos", "status", "TEXT DEFAULT 'todo'"),   # 보드: todo(준비) / doing(진행중) / done(완료)     ("todos", "rank_no", "REAL DEFAULT 0"),       # 보드 열 안에서의 순서 ] BACKUP_KEEP_DAYS = 30 JSON_FILES = ["todos", "events", "notes", "snippets", "routines", "routineLog", "holidays"] def _to_db(value, typ):     if typ == "bool":         return 1 if value else 0     if typ == "num":         try:             return float(value or 0)         except (TypeError, ValueError):             return 0.0     return "" if value is None else str(value) def _to_js(value, typ):     if typ == "bool":         return bool(value)     if typ == "num":         return value or 0     return value if value is not None else "" class Store:     def __init__(self, db_path: Path, backup_dir: Path):         self.db_path = db_path         self.backup_dir = backup_dir         self.lock = threading.Lock()     @contextmanager     def tx(self):         """잠금 + 트랜잭션 (성공 시 commit, 예외 시 rollback)"""         with self.lock:             conn = sqlite3.connect(self.db_path, timeout=10)             try:                 yield conn                 conn.commit()             except Exception:                 conn.rollback()                 raise             finally:                 conn.close()     # ───────── 초기화 / JSON 이관 ─────────     def init(self, data_dir: Path, seed_dir: Path):         is_new = not self.db_path.exists()         self.db_path.parent.mkdir(parents=True, exist_ok=True)         with self.tx() as c:             c.executescript(DDL)             for table, col, decl in ADDED_COLUMNS:                 if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:                     c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")             # status 컬럼 추가 전 데이터는 done 값으로 맞춤             c.execute("UPDATE todos SET status = CASE WHEN done = 1 THEN 'done' ELSE 'todo' END "                       "WHERE status IS NULL OR status NOT IN ('todo', 'doing', 'done') "                       "OR (done = 1 AND status <> 'done') OR (done = 0 AND status = 'done')")         if not is_new:             return None         # 기존 JSON 파일이 있으면 이관, 없으면 기본 데이터(공휴일·루틴 예시)         found = [n for n in JSON_FILES if (data_dir / f"{n}.json").exists()]         src_dir = data_dir if found else seed_dir         data = {}         for n in JSON_FILES:             p = src_dir / f"{n}.json"             if p.exists():                 data[n] = json.loads(p.read_text(encoding="utf-8"))         self.replace_all(data, backup=False)         if found:             moved = data_dir / "json_migrated"             moved.mkdir(exist_ok=True)             for n in found:                 shutil.move(str(data_dir / f"{n}.json"), str(moved / f"{n}.json"))             return f"JSON {len(found)}개 파일을 DB로 이관했습니다 (원본: {moved})"         return "새 DB를 만들었습니다"     # ───────── 백업 ─────────     def backup_once_a_day(self):         if not self.db_path.exists():             return         self.backup_dir.mkdir(parents=True, exist_ok=True)         dst = self.backup_dir / f"dashboard_{dt.date.today().isoformat()}.db"         if dst.exists():             return         src = sqlite3.connect(self.db_path)         out = sqlite3.connect(dst)         try:             src.backup(out)  # 사용 중에도 일관된 사본을 만드는 SQLite 온라인 백업         finally:             out.close()             src.close()         limit = dt.date.today() - dt.timedelta(days=BACKUP_KEEP_DAYS)         for f in self.backup_dir.glob("dashboard_*.db"):             try:                 if dt.date.fromisoformat(f.stem.split("_", 1)[1]) < limit:                     f.unlink()             except ValueError:                 continue     # ───────── 조회 ─────────     def all(self):         out = {}         with self.tx() as c:             for coll, (table, cols) in TABLES.items():                 order = " ORDER BY sort_order" if table == "routines" else ""                 rows = c.execute(f"SELECT {', '.join(col for _, col, _ in cols)} FROM {table}{order}").fetchall()                 out[coll] = [{f: _to_js(v, t) for (f, _, t), v in zip(cols, r)} for r in rows]             log = {}             for d, rid in c.execute("SELECT log_date, routine_id FROM routine_log ORDER BY log_date"):                 log.setdefault(d, []).append(rid)             out["routineLog"] = log             out["holidays"] = dict(c.execute("SELECT hdate, name FROM holidays ORDER BY hdate").fetchall())         return out     # ───────── 1건 단위 변경 ─────────     def _upsert(self, c, coll, item):         table, cols = TABLES[coll]         if table == "todos" and item.get("status") not in ("todo", "doing", "done"):             item = {**item, "status": "done" if item.get("done") else "todo"}         names = [col for _, col, _ in cols]         values = [_to_db(item.get(f), t) for f, _, t in cols]         sets = ", ".join(f"{n} = excluded.{n}" for n in names[1:])         if table == "routines":             # 새 항목은 맨 뒤 순서로, 기존 항목은 순서 유지             c.execute(                 f"INSERT INTO routines (id, title, sort_order) VALUES (?, ?, "                 f"(SELECT COALESCE(MAX(sort_order), -1) + 1 FROM routines)) ON CONFLICT(id) DO UPDATE SET {sets}",                 values)         else:             c.execute(                 f"INSERT INTO {table} ({', '.join(names)}) VALUES ({', '.join('?' * len(names))}) "                 f"ON CONFLICT(id) DO UPDATE SET {sets}", values)     def upsert(self, coll, item):         self.backup_once_a_day()         with self.tx() as c:             self._upsert(c, coll, item)     def delete(self, coll, item_id):         self.backup_once_a_day()         table = TABLES[coll][0]         with self.tx() as c:             c.execute(f"DELETE FROM {table} WHERE id = ?", (item_id,))             if table == "routines":                 c.execute("DELETE FROM routine_log WHERE routine_id = ?", (item_id,))     def set_routine_order(self, ids):         self.backup_once_a_day()         with self.tx() as c:             c.executemany("UPDATE routines SET sort_order = ? WHERE id = ?", [(i, rid) for i, rid in enumerate(ids)])     def set_routine_log(self, log_date, routine_id, done):         self.backup_once_a_day()         with self.tx() as c:             if done:                 c.execute("INSERT OR IGNORE INTO routine_log (log_date, routine_id) VALUES (?, ?)", (log_date, routine_id))             else:                 c.execute("DELETE FROM routine_log WHERE log_date = ? AND routine_id = ?", (log_date, routine_id))     def set_holiday(self, hdate, name):         self.backup_once_a_day()         with self.tx() as c:             if name:                 c.execute("INSERT INTO holidays (hdate, name) VALUES (?, ?) ON CONFLICT(hdate) DO UPDATE SET name = excluded.name",                           (hdate, name))             else:                 c.execute("DELETE FROM holidays WHERE hdate = ?", (hdate,))     # ───────── 전체 교체 (가져오기 / JSON 이관) ─────────     def replace_all(self, data, backup=True):         if backup:             self.backup_once_a_day()         with self.tx() as c:             for coll, (table, _) in TABLES.items():                 if coll in data:                     c.execute(f"DELETE FROM {table}")                     for item in data[coll]:                         self._upsert(c, coll, item)             if "routineLog" in data:                 c.execute("DELETE FROM routine_log")                 c.executemany("INSERT OR IGNORE INTO routine_log (log_date, routine_id) VALUES (?, ?)",                               [(d, rid) for d, ids in data["routineLog"].items() for rid in ids])             if "holidays" in data:                 c.execute("DELETE FROM holidays")                 c.executemany("INSERT INTO holidays (hdate, name) VALUES (?, ?)", list(data["holidays"].items()))
+````
+
+### `auth.py`
+
+````python
+""" 로그인 (서버 배포용, 사용자 1명) - 비밀번호: data/auth.json 에 scrypt 해시로 저장 (python app.py --set-password) - 세션: 서명된 쿠키 "만료시각.서명" - 서버 재시작해도 유지, 비밀번호를 바꾸면 모든 세션 무효 - 로그인 실패 제한: IP별 15분에 5회, 전체 1시간에 30회 초과 시 잠시 차단 """ import hashlib import hmac import json import secrets import threading import time from pathlib import Path SESSION_DAYS = 30 COOKIE_NAME = "md_session" SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1} IP_WINDOW, IP_MAX = 15 * 60, 5 ALL_WINDOW, ALL_MAX = 60 * 60, 30 def _hash(password, salt):     return hashlib.scrypt(password.encode("utf-8"), salt=salt, dklen=32, **SCRYPT) def set_password(path, password):     salt = secrets.token_bytes(16)     data = {         "salt": salt.hex(),         "hash": _hash(password, salt).hex(),         "secret": secrets.token_hex(32),  # 쿠키 서명 키 - 비밀번호 변경 시 새로 만들어 기존 세션 무효화     }     path = Path(path)     path.write_text(json.dumps(data), encoding="utf-8")     try:         path.chmod(0o600)     except OSError:         pass class Auth:     def __init__(self, path, secure_cookie):         data = json.loads(Path(path).read_text(encoding="utf-8"))         self.salt = bytes.fromhex(data["salt"])         self.hash = bytes.fromhex(data["hash"])         self.secret = bytes.fromhex(data["secret"])         self.secure = secure_cookie         self.lock = threading.Lock()         self.fails = []  # (시각, ip)     # ---- 로그인 시도 제한 ----     def blocked(self, ip):         now = time.time()         with self.lock:             self.fails = [(t, i) for t, i in self.fails if now - t < ALL_WINDOW]             per_ip = sum(1 for t, i in self.fails if i == ip and now - t < IP_WINDOW)             return per_ip >= IP_MAX or len(self.fails) >= ALL_MAX     def check_password(self, ip, password):         ok = hmac.compare_digest(_hash(password or "", self.salt), self.hash)         if not ok:             with self.lock:                 self.fails.append((time.time(), ip))         return ok     # ---- 세션 쿠키 ----     def _sign(self, exp):         return hmac.new(self.secret, str(exp).encode(), hashlib.sha256).hexdigest()     def new_token(self):         exp = int(time.time()) + SESSION_DAYS * 86400         return f"{exp}.{self._sign(exp)}"     def token_exp(self, token):         """유효하면 만료시각, 아니면 None"""         try:             exp_s, sig = (token or "").split(".", 1)             exp = int(exp_s)         except ValueError:             return None         if exp < time.time() or not hmac.compare_digest(sig, self._sign(exp)):             return None         return exp     def needs_refresh(self, exp):         # 쓰고 있으면 계속 연장 (발급 후 하루 지나면 새 쿠키)         return exp - time.time() < (SESSION_DAYS - 1) * 86400     def cookie(self, token, max_age=SESSION_DAYS * 86400):         c = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}"         return c + "; Secure" if self.secure else c     def clear_cookie(self):         return self.cookie("", 0)
+````
+
+### `static/index.html`
+
+````html
+<!doctype html> <html lang="ko"> <head> <meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1"> <title>My Dashboard</title> <link rel="stylesheet" href="style.css"> </head> <body> <header class="top">   <div class="brand">My Dashboard</div>   <nav>     <a href="#home" data-view="home">홈</a>     <a href="#todo" data-view="todo">할 일</a>     <a href="#board" data-view="board">보드</a>     <a href="#calendar" data-view="calendar">달력</a>     <a href="#routine" data-view="routine">루틴</a>     <a href="#notes" data-view="notes">메모</a>     <a href="#snippets" data-view="snippets">스니펫</a>   </nav>   <div class="tools">     <span id="status" class="status"></span>     <button class="ghost" id="btnExport" title="전체 데이터를 JSON 파일로 저장">내보내기</button>     <button class="ghost" id="btnImport" title="내보낸 JSON 파일로 전체 복원">가져오기</button>     <button class="ghost" id="btnTheme" title="밝게/어둡게">◐</button>     <input type="file" id="importFile" accept=".json" hidden>   </div> </header> <main id="main"></main> <dialog id="dlg"><form id="dlgForm" method="dialog"></form></dialog> <script src="app.js"></script> </body> </html>
+````
+
+### `static/style.css`
+
+````css
+:root {   --bg: #f4f5f7; --panel: #fff; --text: #1f2328; --muted: #6b7280; --line: #e3e5e8;   --accent: #2563eb; --accent-soft: #e8efff; --danger: #dc2626; --warn: #d97706; --ok: #16a34a;   --sun: #dc2626; --sat: #2563eb; --today: #fff7d6; --shadow: 0 1px 2px rgba(0,0,0,.06); } :root[data-theme="dark"] {   --bg: #15171a; --panel: #1e2125; --text: #e6e8eb; --muted: #9aa1a9; --line: #2e3238;   --accent: #5b8cff; --accent-soft: #233150; --danger: #f87171; --warn: #fbbf24; --ok: #4ade80;   --sun: #f87171; --sat: #7aa2ff; --today: #3a3420; --shadow: none; } * { box-sizing: border-box; } body { margin: 0; background: var(--bg); color: var(--text);   font: 14px/1.5 "Malgun Gothic", "맑은 고딕", system-ui, sans-serif; } button, input, select, textarea { font: inherit; color: inherit; } input, select, textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; } input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); } textarea { resize: vertical; width: 100%; } button { cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 6px; padding: 6px 12px; } button.ghost { background: transparent; color: var(--text); border-color: var(--line); } button.ghost:hover { border-color: var(--accent); color: var(--accent); } button.danger { background: transparent; color: var(--danger); border-color: var(--danger); } button.icon { background: transparent; border: none; color: var(--muted); padding: 2px 6px; } button.icon:hover { color: var(--accent); } .mono, pre, code { font-family: Consolas, "D2Coding", monospace; } .top { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 20px;   padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; } .brand { font-weight: 700; font-size: 16px; } nav { display: flex; gap: 4px; flex-wrap: wrap; } nav a { padding: 6px 12px; border-radius: 6px; color: var(--muted); text-decoration: none; } nav a:hover { background: var(--bg); color: var(--text); } nav a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; } .tools { margin-left: auto; display: flex; gap: 6px; align-items: center; } .status { font-size: 12px; color: var(--muted); margin-right: 6px; } .status.err { color: var(--danger); font-weight: 600; } main { max-width: 1280px; margin: 0 auto; padding: 20px; } h2 { margin: 0 0 14px; font-size: 20px; } h3 { margin: 0 0 10px; font-size: 15px; } .muted { color: var(--muted); } .small { font-size: 12px; } .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; } .spacer { flex: 1; } .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; box-shadow: var(--shadow); } .grid { display: grid; gap: 16px; } .g2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); } .empty { color: var(--muted); padding: 12px 0; text-align: center; } /* 홈 */ .hello { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; } .hello .date { font-size: 22px; font-weight: 700; } .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; } .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; cursor: pointer; } .stat .n { font-size: 26px; font-weight: 700; } .stat .l { color: var(--muted); font-size: 12px; } .stat.danger .n { color: var(--danger); } .stat.warn .n { color: var(--warn); } .stat.ok .n { color: var(--ok); } .dday { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed var(--line); } .dday b { color: var(--accent); } .progress { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 6px 0 10px; } .progress > i { display: block; height: 100%; background: var(--ok); } /* 할 일 */ .quick { display: grid; grid-template-columns: 1fr 150px 90px 110px auto; gap: 8px; margin-bottom: 12px; } .filters { margin-bottom: 12px; } .chip-btn { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 16px; padding: 4px 12px; } .chip-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; } .chip-btn .cnt { opacity: .7; margin-left: 4px; font-size: 12px; } .list { list-style: none; margin: 0; padding: 0; } .item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 4px; border-bottom: 1px solid var(--line); } .item:last-child { border-bottom: none; } .item input[type=checkbox] { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--accent); } .item .body { flex: 1; min-width: 0; } .item .title { word-break: break-all; } .item.done .title { text-decoration: line-through; color: var(--muted); } .item .meta { font-size: 12px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; } .item .memo { font-size: 12px; color: var(--muted); white-space: pre-wrap; margin-top: 2px; } .item .acts { opacity: 0; transition: opacity .1s; } .item:hover .acts { opacity: 1; } .pri { width: 8px; height: 8px; border-radius: 50%; margin-top: 7px; flex: none; } .pri.high { background: var(--danger); } .pri.mid { background: var(--warn); } .pri.low { background: var(--line); } .tag { background: var(--accent-soft); color: var(--accent); border-radius: 10px; padding: 0 8px; font-size: 12px; } .due.over { color: var(--danger); font-weight: 600; } .due.today { color: var(--warn); font-weight: 600; } .badge-doing { background: var(--warn); color: #fff; border-radius: 10px; padding: 0 8px; font-size: 12px; } /* 보드 */ .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; align-items: start; } .kcol { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-height: 60vh; } .kcol.over { border-color: var(--accent); background: var(--accent-soft); } .khead { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; } .khead .cnt { background: var(--line); border-radius: 10px; padding: 0 8px; font-size: 12px; color: var(--muted); } .kcol[data-st="todo"] .khead b { color: var(--muted); } .kcol[data-st="doing"] .khead b { color: var(--warn); } .kcol[data-st="done"] .khead b { color: var(--ok); } .kadd input { width: 100%; margin-bottom: 10px; } .klist { display: flex; flex-direction: column; gap: 8px; min-height: 40px; } .kcard { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; cursor: grab; box-shadow: var(--shadow); } .kcard:hover { border-color: var(--accent); } .kcard.dragging { opacity: .4; } .kcard.done .ktitle { text-decoration: line-through; color: var(--muted); } .ktop { display: flex; gap: 8px; align-items: flex-start; } .ktop .pri { margin-top: 7px; } .ktitle { word-break: break-all; } .kmeta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0 0 16px; } /* 달력 */ .cal-wrap { display: grid; grid-template-columns: 1fr 300px; gap: 16px; } .cal-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; } .cal-head .ym { font-size: 20px; font-weight: 700; min-width: 140px; text-align: center; } .cal { display: grid; grid-template-columns: repeat(7, 1fr); border-top: 1px solid var(--line); border-left: 1px solid var(--line); } .cal .wd { padding: 6px; text-align: center; font-size: 12px; color: var(--muted); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--bg); } .cal .wd.sun { color: var(--sun); } .cal .wd.sat { color: var(--sat); } .cell { min-height: 104px; padding: 4px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); cursor: pointer; overflow: hidden; background: var(--panel); } .cell:hover { background: var(--bg); } .cell.other { opacity: .45; } .cell.today { background: var(--today); } .cell.sel { outline: 2px solid var(--accent); outline-offset: -2px; } .cell .dn { font-size: 13px; font-weight: 600; display: flex; gap: 4px; align-items: baseline; } .cell .dn .hol { font-size: 11px; font-weight: 400; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; } .cell.sun .dn, .cell.hol .dn { color: var(--sun); } .cell.sat .dn { color: var(--sat); } .ev { font-size: 11px; border-radius: 3px; padding: 0 4px; margin-top: 2px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .ev.todo { background: transparent; color: var(--text); border: 1px solid var(--line); } .ev.todo.done { text-decoration: line-through; color: var(--muted); } .more { font-size: 11px; color: var(--muted); margin-top: 2px; } .day-panel .ditem { display: flex; gap: 8px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--line); } .swatch { width: 10px; height: 10px; border-radius: 2px; margin-top: 5px; flex: none; } /* 메모 */ .notes { display: grid; grid-template-columns: 280px 1fr; gap: 16px; min-height: 70vh; } .note-list { padding: 8px; display: flex; flex-direction: column; gap: 6px; } .note-list .nl { overflow-y: auto; max-height: 68vh; } .nitem { padding: 8px 10px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; } .nitem:hover { background: var(--bg); } .nitem.on { background: var(--accent-soft); border-color: var(--accent); } .nitem .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .nitem .p { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .editor { display: flex; flex-direction: column; gap: 8px; } .editor .ttl { font-size: 18px; font-weight: 600; border: none; border-bottom: 1px solid var(--line); border-radius: 0; padding: 6px 2px; background: transparent; } .editor textarea { flex: 1; min-height: 60vh; border: none; background: transparent; padding: 4px 2px; line-height: 1.7; } /* 스니펫 */ .snips { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 12px; } .snip pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin: 8px 0 0;   max-height: 260px; overflow: auto; font-size: 12.5px; white-space: pre; } /* SQL 구문 강조 */ :root { --sk: #0033b3; --sf: #00627a; --ss: #067d17; --sn: #1750eb; --sc: #8c8c8c; --sh: #b3541e; --sb: #871094; --si: #6b4f00; } :root[data-theme="dark"] { --sk: #cf8e6d; --sf: #56a8f5; --ss: #6aab73; --sn: #2aacb8; --sc: #7a7e85; --sh: #e0a35c; --sb: #c77dbb; --si: #d5b778; } .sk { color: var(--sk); font-weight: 600; } .sf { color: var(--sf); } .ss { color: var(--ss); } .sn { color: var(--sn); } .sc { color: var(--sc); font-style: italic; } .sh { color: var(--sh); font-style: italic; } .sb { color: var(--sb); } .si { color: var(--si); } /* 루틴 */ .rt-hist { border-collapse: collapse; font-size: 12px; width: 100%; } .rt-hist th, .rt-hist td { border: 1px solid var(--line); padding: 4px; text-align: center; } .rt-hist td.name { text-align: left; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; } .rt-hist td.c { cursor: pointer; width: 30px; } .rt-hist td.c.on { background: var(--ok); color: #fff; } .rt-hist th.today { background: var(--today); } .rt-hist th.sun { color: var(--sun); } .rt-hist th.sat { color: var(--sat); } /* 대화상자 */ dialog { border: 1px solid var(--line); border-radius: 12px; padding: 0; background: var(--panel); color: var(--text); width: min(520px, 92vw); } dialog::backdrop { background: rgba(0,0,0,.35); } #dlgForm { padding: 20px; display: flex; flex-direction: column; gap: 10px; } #dlgForm label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); } #dlgForm label.chk { flex-direction: row; align-items: center; gap: 6px; color: var(--text); font-size: 14px; } #dlgForm .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; } #dlgForm .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; } #dlgForm .btns .left { margin-right: auto; } .colors { display: flex; gap: 6px; } .colors label { cursor: pointer; } .colors input { display: none; } .colors span { display: block; width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; } .colors input:checked + span { border-color: var(--text); } @media (max-width: 900px) {   .cal-wrap, .notes, .board { grid-template-columns: 1fr; }   .kcol { min-height: 0; }   .quick { grid-template-columns: 1fr 1fr; }   .cell { min-height: 70px; } }
+````
+
+### `static/app.js`
+
+````javascript
+'use strict'; /* My Dashboard - 프론트엔드 (외부 라이브러리 없음) */ // ───────── 공통 유틸 ───────── const S = { todos: [], events: [], notes: [], snippets: [], routines: [], routineLog: {}, holidays: {} }; const $ = (s, r = document) => r.querySelector(s); const $$ = (s, r = document) => [...r.querySelectorAll(s)]; const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7); const pad = n => String(n).padStart(2, '0'); const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }; const today = () => ymd(new Date()); const addDays = (s, n) => { const d = parse(s); d.setDate(d.getDate() + n); return ymd(d); }; const diffDays = (a, b) => Math.round((parse(b) - parse(a)) / 86400000); const nowIso = () => { const d = new Date(); return `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }; const WD = ['일', '월', '화', '수', '목', '금', '토']; const fmtDay = s => { const d = parse(s); return `${d.getMonth() + 1}/${d.getDate()}(${WD[d.getDay()]})`; }; const PRI = { high: '높음', mid: '보통', low: '낮음' }; const PRI_ORDER = { high: 0, mid: 1, low: 2 }; const STATUS = { todo: '준비', doing: '진행중', done: '완료' }; const COLORS = ['#2563eb', '#16a34a', '#dc2626', '#d97706', '#7c3aed', '#0891b2', '#db2777', '#6b7280']; const REPEAT = { none: '반복 안 함', daily: '매일', weekdays: '평일(월~금)', weekly: '매주', monthly: '매월', yearly: '매년' }; // ───────── 저장 (서버 API, 1건 단위) ───────── // 같은 경로의 요청이 대기 중이면 마지막 것만 보냄 (메모 입력 중 연속 저장 방지) const pending = new Map(); function send(method, path, body, delay = 0) {   const prev = pending.get(path);   if (prev) clearTimeout(prev.timer);   setStatus('저장 중…');   const job = { method, body };   job.timer = setTimeout(() => { pending.delete(path); request(method, path, body); }, delay);   pending.set(path, job); } async function request(method, path, body) {   try {     const r = await fetch('/api/' + path, {       method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),     });     if (!r.ok) throw new Error(r.status);     const d = new Date();     setStatus(`저장됨 ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`);     return r.json();   } catch (e) {     setStatus('저장 실패 — 앱(서버)이 실행 중인지 확인하세요', true);     throw e;   } } const putItem = (coll, item, delay = 0) => send('PUT', `${coll}/${item.id}`, item, delay); const delItem = (coll, id) => send('DELETE', `${coll}/${id}`); // 저장 대기 중에 창을 닫아도 유실되지 않도록 (sendBeacon 은 POST → 서버에서 upsert) window.addEventListener('beforeunload', () => {   for (const [path, job] of pending) {     clearTimeout(job.timer);     if (job.method === 'PUT') navigator.sendBeacon('/api/' + path, new Blob([JSON.stringify(job.body)], { type: 'application/json' }));   } }); function setStatus(msg, err = false) {   const el = $('#status');   el.textContent = msg;   el.classList.toggle('err', err); } // ───────── 대화상자(폼) ───────── // fields: {key,label,type,options,required,placeholder,rows,half} function openForm({ title, fields, values = {}, onSubmit, onDelete, submitText = '저장' }) {   const dlg = $('#dlg'), form = $('#dlgForm');   const fieldHtml = f => {     const v = values[f.key] ?? f.default ?? '';     const req = f.required ? 'required' : '';     const ph = f.placeholder ? `placeholder="${esc(f.placeholder)}"` : '';     if (f.type === 'checkbox') return `<label class="chk"><input type="checkbox" name="${f.key}" ${v ? 'checked' : ''}> ${esc(f.label)}</label>`;     let input;     if (f.type === 'textarea') input = `<textarea name="${f.key}" rows="${f.rows || 4}" ${ph} ${f.mono ? 'class="mono"' : ''}>${esc(v)}</textarea>`;     else if (f.type === 'select') input = `<select name="${f.key}">${Object.entries(f.options).map(([k, l]) => `<option value="${esc(k)}" ${k === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;     else if (f.type === 'color') input = `<div class="colors">${COLORS.map(c => `<label><input type="radio" name="${f.key}" value="${c}" ${c === (v || COLORS[0]) ? 'checked' : ''}><span style="background:${c}"></span></label>`).join('')}</div>`;     else input = `<input type="${f.type || 'text'}" name="${f.key}" value="${esc(v)}" ${req} ${ph} ${f.list ? `list="${f.key}_dl"` : ''}>`;     const dl = f.list ? `<datalist id="${f.key}_dl">${f.list.map(x => `<option value="${esc(x)}">`).join('')}</datalist>` : '';     return `<label>${esc(f.label)}${input}${dl}</label>`;   };   // half:true 인 필드는 둘씩 묶어 한 줄에   let html = `<h3>${esc(title)}</h3>`;   for (let i = 0; i < fields.length; i++) {     if (fields[i].half && fields[i + 1]?.half) { html += `<div class="two">${fieldHtml(fields[i])}${fieldHtml(fields[i + 1])}</div>`; i++; }     else html += fieldHtml(fields[i]);   }   html += `<div class="btns">${onDelete ? '<button type="button" class="danger left" data-act="del">삭제</button>' : ''}     <button type="button" class="ghost" data-act="cancel">취소</button><button type="submit">${esc(submitText)}</button></div>`;   form.innerHTML = html;   form.onsubmit = e => {     e.preventDefault();     const out = {};     for (const f of fields) {       const el = form.elements[f.key];       if (f.type === 'checkbox') out[f.key] = el.checked;       else if (f.type === 'color') out[f.key] = form.querySelector(`input[name="${f.key}"]:checked`)?.value || COLORS[0];       else out[f.key] = el.value.trim();     }     if (onSubmit(out) === false) return;     dlg.close();     render();   };   form.querySelector('[data-act=cancel]').onclick = () => dlg.close();   const del = form.querySelector('[data-act=del]');   if (del) del.onclick = () => { if (confirm('삭제할까요?')) { onDelete(); dlg.close(); render(); } };   dlg.showModal();   form.querySelector('input:not([type=checkbox]):not([type=radio]), textarea')?.focus(); } // ───────── 할 일 ───────── function dueInfo(t) {   if (!t.due) return { cls: '', text: '' };   const n = diffDays(today(), t.due);   if (t.done) return { cls: '', text: fmtDay(t.due) };   if (n < 0) return { cls: 'over', text: `${fmtDay(t.due)} · ${-n}일 지남` };   if (n === 0) return { cls: 'today', text: '오늘 마감' };   return { cls: '', text: `${fmtDay(t.due)} · D-${n}` }; } function sortTodos(list) {   return [...list].sort((a, b) =>     (a.done - b.done) ||     ((a.due || '9999') < (b.due || '9999') ? -1 : (a.due || '9999') > (b.due || '9999') ? 1 : 0) ||     (PRI_ORDER[a.priority] - PRI_ORDER[b.priority]) ||     (a.createdAt < b.createdAt ? -1 : 1)); } function todoTags() { return [...new Set(S.todos.map(t => t.tag).filter(Boolean))].sort(); } const nextRank = st => Math.max(0, ...S.todos.filter(t => t.status === st).map(t => t.rank || 0)) + 1000; // 상태 변경 시 done/doneAt 을 함께 맞추고, 다른 열로 가면 그 열의 맨 아래로 function applyTodoStatus(t, st) {   if (t.status === st) return;   t.status = st;   t.done = st === 'done';   t.doneAt = t.done ? nowIso() : '';   t.rank = nextRank(st); } function toggleTodo(id) {   const t = S.todos.find(x => x.id === id);   applyTodoStatus(t, t.done ? 'todo' : 'done');   putItem('todos', t); } function editTodo(t) {   const isNew = !t;   openForm({     title: isNew ? '할 일 추가' : '할 일 수정',     values: t || { priority: 'mid', status: 'todo' },     fields: [       { key: 'title', label: '제목', required: true },       { key: 'due', label: '마감일', type: 'date', half: true },       { key: 'priority', label: '우선순위', type: 'select', options: PRI, half: true },       { key: 'tag', label: '분류(태그)', list: todoTags(), placeholder: '예: 점검, 요청, 질문', half: true },       { key: 'status', label: '상태', type: 'select', options: STATUS, half: true },       { key: 'memo', label: '메모', type: 'textarea', rows: 3 },     ],     onSubmit: ({ status, ...v }) => {       const item = isNew ? { id: uid(), ...v, status: '', done: false, doneAt: '', createdAt: nowIso() } : Object.assign(t, v);       applyTodoStatus(item, status);       if (isNew) S.todos.push(item);       putItem('todos', item);     },     onDelete: isNew ? null : () => { S.todos = S.todos.filter(x => x.id !== t.id); delItem('todos', t.id); },   }); } function todoItemHtml(t) {   const d = dueInfo(t);   return `<li class="item ${t.done ? 'done' : ''}" data-id="${t.id}">     <input type="checkbox" data-act="toggle" ${t.done ? 'checked' : ''}>     <span class="pri ${t.priority}" title="우선순위 ${PRI[t.priority]}"></span>     <div class="body">       <div class="title">${esc(t.title)}</div>       <div class="meta">${t.status === 'doing' ? '<span class="badge-doing">진행중</span>' : ''}${t.tag ? `<span class="tag">${esc(t.tag)}</span>` : ''}${d.text ? `<span class="due ${d.cls}">${d.text}</span>` : ''}${t.done && t.doneAt ? `<span>완료 ${t.doneAt.slice(5, 10).replace('-', '/')}</span>` : ''}</div>       ${t.memo ? `<div class="memo">${esc(t.memo)}</div>` : ''}     </div>     <span class="acts"><button class="icon" data-act="edit" title="수정">✎</button></span>   </li>`; } // 목록의 체크/수정 버튼 공통 처리 function bindTodoList(root) {   root.addEventListener('click', e => {     const li = e.target.closest('.item[data-id]');     if (!li) return;     const t = S.todos.find(x => x.id === li.dataset.id);     const act = e.target.dataset.act;     if (act === 'toggle') { toggleTodo(t.id); render(); }     else if (act === 'edit' || e.target.closest('.title')) editTodo(t);   }); } function quickAddHtml() {   return `<form class="quick" id="quickAdd">     <input name="title" placeholder="할 일을 입력하고 Enter" required autocomplete="off">     <input name="due" type="date" title="마감일">     <select name="priority" title="우선순위">${Object.entries(PRI).map(([k, l]) => `<option value="${k}" ${k === 'mid' ? 'selected' : ''}>${l}</option>`).join('')}</select>     <input name="tag" placeholder="분류" list="qtags"><datalist id="qtags">${todoTags().map(x => `<option value="${esc(x)}">`).join('')}</datalist>     <button>추가</button>   </form>`; } function bindQuickAdd(root) {   const f = $('#quickAdd', root);   f.onsubmit = e => {     e.preventDefault();     const t = { id: uid(), title: f.title.value.trim(), due: f.due.value, priority: f.priority.value,       tag: f.tag.value.trim(), memo: '', done: false, doneAt: '', createdAt: nowIso(), status: 'todo', rank: nextRank('todo') };     S.todos.push(t);     putItem('todos', t);     render();     $('#quickAdd input[name=title]')?.focus();   }; } const todoUI = { filter: 'open', tag: '', q: '' }; function renderTodo(main) {   const t0 = today();   const F = {     open: ['미완료', t => !t.done],     doing: ['진행중', t => t.status === 'doing'],     today: ['오늘·지연', t => !t.done && t.due && t.due <= t0],     week: ['7일 이내', t => !t.done && t.due && t.due <= addDays(t0, 7)],     nodue: ['마감 없음', t => !t.done && !t.due],     done: ['완료', t => t.done],     all: ['전체', () => true],   };   main.innerHTML = `<h2>할 일</h2>${quickAddHtml()}     <div class="row filters">       ${Object.entries(F).map(([k, [l, fn]]) => `<button class="chip-btn ${todoUI.filter === k ? 'on' : ''}" data-f="${k}">${l}<span class="cnt">${S.todos.filter(fn).length}</span></button>`).join('')}       <span class="spacer"></span>       <select id="tagSel"><option value="">모든 분류</option>${todoTags().map(x => `<option ${x === todoUI.tag ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select>       <input id="q" placeholder="검색" value="${esc(todoUI.q)}">       ${todoUI.filter === 'done' ? '<button class="ghost" id="clearDone">완료 항목 일괄 삭제</button>' : ''}     </div>     <div class="panel"><ul class="list" id="todoList"></ul></div>`;   const drawList = () => {     const q = todoUI.q.toLowerCase();     const list = sortTodos(S.todos.filter(F[todoUI.filter][1])       .filter(t => !todoUI.tag || t.tag === todoUI.tag)       .filter(t => !q || (t.title + ' ' + (t.memo || '') + ' ' + (t.tag || '')).toLowerCase().includes(q)));     $('#todoList').innerHTML = list.map(todoItemHtml).join('') || '<li class="empty">항목이 없습니다</li>';   };   drawList();   bindQuickAdd(main);   bindTodoList($('#todoList'));   $$('[data-f]', main).forEach(b => b.onclick = () => { todoUI.filter = b.dataset.f; render(); });   $('#tagSel').onchange = e => { todoUI.tag = e.target.value; drawList(); };   $('#q').oninput = e => { todoUI.q = e.target.value; drawList(); };   const cd = $('#clearDone');   if (cd) cd.onclick = () => {     const n = S.todos.filter(t => t.done).length;     if (n && confirm(`완료된 ${n}건을 삭제할까요? (서버 일일 백업에는 남아 있습니다)`)) { S.todos.filter(t => t.done).forEach(t => delItem('todos', t.id)); S.todos = S.todos.filter(t => !t.done); render(); }   }; } // ───────── 보드 (준비 / 진행중 / 완료, 드래그로 이동) ───────── const boardUI = { tag: '' }; const DONE_SHOW_DAYS = 14; const byRank = (a, b) => ((a.rank || 0) - (b.rank || 0)) || (a.createdAt < b.createdAt ? -1 : 1); function kcardHtml(t) {   const d = dueInfo(t);   return `<div class="kcard ${t.done ? 'done' : ''}" draggable="true" data-id="${t.id}">     <div class="ktop"><span class="pri ${t.priority}" title="우선순위 ${PRI[t.priority]}"></span><div class="ktitle">${esc(t.title)}</div></div>     ${t.tag || d.text ? `<div class="kmeta">${t.tag ? `<span class="tag">${esc(t.tag)}</span>` : ''}${d.text ? `<span class="due ${d.cls}">${d.text}</span>` : ''}</div>` : ''}   </div>`; } function renderBoard(main) {   const since = addDays(today(), -(DONE_SHOW_DAYS - 1));   main.innerHTML = `<div class="row" style="margin-bottom:14px"><h2 style="margin:0">보드</h2>       <span class="muted small">카드를 끌어서 상태·순서 변경 · 클릭하면 수정</span><span class="spacer"></span>       <select id="btag"><option value="">모든 분류</option>${todoTags().map(x => `<option ${x === boardUI.tag ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></div>     <div class="board">${Object.entries(STATUS).map(([st, label]) => {       const all = S.todos.filter(t => t.status === st && (!boardUI.tag || t.tag === boardUI.tag));       const list = (st === 'done' ? all.filter(t => (t.doneAt || '').slice(0, 10) >= since) : all).sort(byRank);       const hidden = all.length - list.length;       return `<div class="kcol" data-st="${st}">         <div class="khead"><b>${label}</b><span class="cnt">${list.length}</span></div>         ${st !== 'done' ? `<form class="kadd" data-st="${st}"><input placeholder="+ 추가 (Enter)" required autocomplete="off"></form>` : `<div class="muted small" style="margin-bottom:8px">최근 ${DONE_SHOW_DAYS}일 완료만 표시</div>`}         <div class="klist">${list.map(kcardHtml).join('')}</div>         ${hidden ? `<a class="small muted" href="#todo" data-done-all>이전 완료 ${hidden}건은 할 일 탭에서 보기</a>` : ''}       </div>`;     }).join('')}</div>`;   $('#btag').onchange = e => { boardUI.tag = e.target.value; render(); };   $$('.kadd', main).forEach(f => f.onsubmit = e => {     e.preventDefault();     const st = f.dataset.st, input = f.querySelector('input');     const t = { id: uid(), title: input.value.trim(), due: '', priority: 'mid', tag: boardUI.tag, memo: '',       done: false, doneAt: '', createdAt: nowIso(), status: st, rank: nextRank(st) };     S.todos.push(t);     putItem('todos', t);     render();     $(`.kadd[data-st="${st}"] input`)?.focus();   });   $$('[data-done-all]', main).forEach(a => a.onclick = () => { todoUI.filter = 'done'; });   const board = $('.board', main);   let dragEl = null;   board.addEventListener('click', e => {     const c = e.target.closest('.kcard');     if (c) editTodo(S.todos.find(t => t.id === c.dataset.id));   });   board.addEventListener('dragstart', e => {     dragEl = e.target.closest('.kcard');     if (!dragEl) return;     e.dataTransfer.effectAllowed = 'move';     e.dataTransfer.setData('text/plain', dragEl.dataset.id);     requestAnimationFrame(() => dragEl?.classList.add('dragging'));   });   // 끌고 있는 동안 카드를 실제 위치로 옮겨 미리 보여줌   board.addEventListener('dragover', e => {     const col = e.target.closest('.kcol');     if (!col || !dragEl) return;     e.preventDefault();     $$('.kcol.over', board).forEach(c => c !== col && c.classList.remove('over'));     col.classList.add('over');     const list = $('.klist', col);     const after = $$('.kcard:not(.dragging)', list).find(c => { const r = c.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });     if (after) { if (after.previousElementSibling !== dragEl) list.insertBefore(dragEl, after); }     else if (list.lastElementChild !== dragEl) list.appendChild(dragEl);   });   board.addEventListener('drop', e => {     const col = e.target.closest('.kcol');     if (!col || !dragEl) return;     e.preventDefault();     const t = S.todos.find(x => x.id === dragEl.dataset.id);     applyTodoStatus(t, col.dataset.st);     // 열 안의 화면 순서대로 순번 재부여 (바뀐 카드만 저장)     $$('.kcard', col).forEach((c, i) => {       const x = S.todos.find(y => y.id === c.dataset.id), r = (i + 1) * 1000;       if (x.rank !== r || x === t) { x.rank = r; putItem('todos', x); }     });   });   // 드롭 성공·취소 모두 데이터 기준으로 다시 그림   board.addEventListener('dragend', () => { dragEl = null; render(); }); } // ───────── 일정 / 달력 ───────── function matchRepeat(rep, start, base) {   const s = parse(start), b = parse(base);   switch (rep) {     case 'daily': return true;     case 'weekdays': return b.getDay() > 0 && b.getDay() < 6;     case 'weekly': return diffDays(start, base) % 7 === 0;     case 'monthly': return s.getDate() === b.getDate();     case 'yearly': return s.getDate() === b.getDate() && s.getMonth() === b.getMonth();     default: return base === start;   } } // 해당 날짜(d)에 일정이 걸쳐 있는지 (여러 날 일정 + 반복 고려) function occursOn(ev, d) {   if (d < ev.date) return false;   const span = ev.endDate && ev.endDate > ev.date ? diffDays(ev.date, ev.endDate) : 0;   const rep = ev.repeat || 'none';   if (rep === 'none') return d <= addDays(ev.date, span);   for (let k = 0; k <= span; k++) {     const base = addDays(d, -k);     if (base < ev.date) break;     if (ev.until && base > ev.until) continue;     if (matchRepeat(rep, ev.date, base)) return true;   }   return false; } function eventsOn(d) {   return S.events.filter(e => occursOn(e, d)).sort((a, b) => (a.time || '99') < (b.time || '99') ? -1 : 1); } function nextOccurrence(ev, from, maxDays = 400) {   for (let i = 0; i <= maxDays; i++) { const d = addDays(from, i); if (occursOn(ev, d) && (i === 0 || !occursOn(ev, addDays(d, -1)) || ev.repeat === 'daily' || ev.repeat === 'weekdays')) return d; }   return null; } function editEvent(ev, date) {   const isNew = !ev;   openForm({     title: isNew ? '일정 추가' : '일정 수정',     values: ev || { date: date || today(), repeat: 'none', color: COLORS[0] },     fields: [       { key: 'title', label: '제목', required: true },       { key: 'date', label: '시작일', type: 'date', required: true, half: true },       { key: 'endDate', label: '종료일 (여러 날일 때)', type: 'date', half: true },       { key: 'time', label: '시간', type: 'time', half: true },       { key: 'repeat', label: '반복', type: 'select', options: REPEAT, half: true },       { key: 'until', label: '반복 종료일 (비우면 계속)', type: 'date' },       { key: 'color', label: '색상', type: 'color' },       { key: 'memo', label: '메모', type: 'textarea', rows: 3 },       { key: 'dday', label: '홈 화면에 D-Day로 표시', type: 'checkbox' },     ],     onSubmit: v => {       if (v.endDate && v.endDate < v.date) { alert('종료일이 시작일보다 빠릅니다.'); return false; }       const item = isNew ? { id: uid(), ...v } : Object.assign(ev, v);       if (isNew) S.events.push(item);       putItem('events', item);     },     onDelete: isNew ? null : () => { S.events = S.events.filter(x => x.id !== ev.id); delItem('events', ev.id); },   }); } const calUI = { y: new Date().getFullYear(), m: new Date().getMonth(), sel: today() }; function renderCalendar(main) {   const { y, m } = calUI, t0 = today();   const first = new Date(y, m, 1);   const start = addDays(ymd(first), -first.getDay());   const weeks = Math.ceil((first.getDay() + new Date(y, m + 1, 0).getDate()) / 7);   let cells = WD.map((w, i) => `<div class="wd ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</div>`).join('');   for (let i = 0; i < weeks * 7; i++) {     const d = addDays(start, i), dd = parse(d), hol = S.holidays[d];     const evs = eventsOn(d), tds = S.todos.filter(t => t.due === d);     const chips = [       ...evs.map(e => `<div class="ev" style="background:${e.color || COLORS[0]}" title="${esc(e.title)}">${e.time ? e.time + ' ' : ''}${esc(e.title)}</div>`),       ...tds.map(t => `<div class="ev todo ${t.done ? 'done' : ''}" title="할 일: ${esc(t.title)}">☐ ${esc(t.title)}</div>`),     ];     const cls = ['cell', dd.getMonth() !== m && 'other', d === t0 && 'today', d === calUI.sel && 'sel',       dd.getDay() === 0 && 'sun', dd.getDay() === 6 && 'sat', hol && 'hol'].filter(Boolean).join(' ');     cells += `<div class="${cls}" data-d="${d}"><div class="dn">${dd.getDate()}${hol ? `<span class="hol">${esc(hol)}</span>` : ''}</div>       ${chips.slice(0, 4).join('')}${chips.length > 4 ? `<div class="more">+${chips.length - 4}건</div>` : ''}</div>`;   }   main.innerHTML = `<div class="cal-wrap"><div>       <div class="cal-head">         <button class="ghost" id="prev">◀</button><div class="ym">${y}년 ${m + 1}월</div><button class="ghost" id="next">▶</button>         <button class="ghost" id="goToday">오늘</button><span class="spacer"></span>         <span class="muted small">날짜 더블클릭 = 일정 추가</span>         <button id="addEv">+ 일정</button>       </div>       <div class="cal">${cells}</div></div>       <div class="panel day-panel" id="dayPanel"></div></div>`;   drawDayPanel();   $('#prev').onclick = () => { calUI.m--; if (calUI.m < 0) { calUI.m = 11; calUI.y--; } render(); };   $('#next').onclick = () => { calUI.m++; if (calUI.m > 11) { calUI.m = 0; calUI.y++; } render(); };   $('#goToday').onclick = () => { const n = new Date(); Object.assign(calUI, { y: n.getFullYear(), m: n.getMonth(), sel: today() }); render(); };   $('#addEv').onclick = () => editEvent(null, calUI.sel);   $('.cal').addEventListener('click', e => {     const c = e.target.closest('.cell'); if (!c) return;     calUI.sel = c.dataset.d;     $$('.cell.sel').forEach(x => x.classList.remove('sel')); c.classList.add('sel');     drawDayPanel();   });   $('.cal').addEventListener('dblclick', e => { const c = e.target.closest('.cell'); if (c) editEvent(null, c.dataset.d); }); } function drawDayPanel() {   const d = calUI.sel, hol = S.holidays[d];   const evs = eventsOn(d), tds = sortTodos(S.todos.filter(t => t.due === d));   $('#dayPanel').innerHTML = `<h3>${fmtDay(d)} ${hol ? `<span style="color:var(--sun)">${esc(hol)}</span>` : ''}</h3>     <div class="muted small">일정</div>     ${evs.map(e => `<div class="ditem" data-ev="${e.id}" style="cursor:pointer"><span class="swatch" style="background:${e.color}"></span>       <div><div>${e.time ? `<b>${e.time}</b> ` : ''}${esc(e.title)}</div>       <div class="muted small">${e.endDate && e.endDate > e.date ? `${fmtDay(e.date)} ~ ${fmtDay(e.endDate)} ` : ''}${e.repeat && e.repeat !== 'none' ? REPEAT[e.repeat] : ''}</div>       ${e.memo ? `<div class="small muted" style="white-space:pre-wrap">${esc(e.memo)}</div>` : ''}</div></div>`).join('') || '<div class="empty">없음</div>'}     <div class="row" style="margin:6px 0 14px"><button class="ghost" id="dpAddEv">+ 일정</button><button class="ghost" id="dpAddTd">+ 이 날 마감 할 일</button></div>     <div class="muted small">마감 할 일</div>     <ul class="list" id="dpTodos">${tds.map(todoItemHtml).join('') || '<li class="empty">없음</li>'}</ul>     <div style="margin-top:14px"><button class="ghost" id="dpHol">${hol ? '휴일 해제' : '휴일·휴무일로 지정'}</button></div>`;   $$('[data-ev]', $('#dayPanel')).forEach(x => x.onclick = () => editEvent(S.events.find(e => e.id === x.dataset.ev)));   $('#dpHol').onclick = () => {     if (hol) {       if (!confirm(`${fmtDay(d)} "${hol}" 휴일을 해제할까요?`)) return;       delete S.holidays[d];       send('DELETE', `holidays/${d}`);     } else {       const name = prompt('휴일 이름 (예: 창립기념일, 연차)');       if (!name || !name.trim()) return;       S.holidays[d] = name.trim();       send('PUT', `holidays/${d}`, { name: name.trim() });     }     render();   };   $('#dpAddEv').onclick = () => editEvent(null, d);   $('#dpAddTd').onclick = () => { editTodo(null); $('#dlgForm').elements.due.value = d; };   bindTodoList($('#dpTodos')); } // ───────── 루틴 (매일 반복 점검표) ───────── function routineDone(d) { return S.routineLog[d] || []; } function toggleRoutine(d, id) {   const cur = new Set(routineDone(d));   const on = !cur.has(id);   on ? cur.add(id) : cur.delete(id);   if (cur.size) S.routineLog[d] = [...cur]; else delete S.routineLog[d];   send(on ? 'PUT' : 'DELETE', `routineLog/${d}/${id}`); } function routineChecklistHtml(d) {   const done = routineDone(d);   const n = S.routines.filter(r => done.includes(r.id)).length, total = S.routines.length;   return `<div class="small muted">${n} / ${total} 완료</div>     <div class="progress"><i style="width:${total ? n / total * 100 : 0}%"></i></div>     <ul class="list">${S.routines.map(r => `<li class="item ${done.includes(r.id) ? 'done' : ''}">       <input type="checkbox" data-rt="${r.id}" data-d="${d}" ${done.includes(r.id) ? 'checked' : ''}><div class="body"><div class="title">${esc(r.title)}</div></div></li>`).join('')       || '<li class="empty">루틴 탭에서 매일 할 점검 항목을 추가하세요</li>'}</ul>`; } function bindRoutineChecks(root) {   $$('[data-rt]', root).forEach(c => c.onchange = () => { toggleRoutine(c.dataset.d, c.dataset.rt); render(); }); } function renderRoutine(main) {   const t0 = today(), days = [...Array(14)].map((_, i) => addDays(t0, i - 13));   main.innerHTML = `<h2>루틴 <span class="muted small">매일 반복하는 점검 항목 · 날짜별 완료 기록이 남습니다</span></h2>     <div class="grid g2">       <div class="panel"><h3>오늘 (${fmtDay(t0)})</h3>${routineChecklistHtml(t0)}</div>       <div class="panel"><h3>항목 관리</h3>         <form class="row" id="rtAdd"><input name="t" placeholder="예: alert log 확인" required style="flex:1"><button>추가</button></form>         <ul class="list" style="margin-top:8px">${S.routines.map((r, i) => `<li class="item"><div class="body"><div class="title">${esc(r.title)}</div></div>           <button class="icon" data-mv="${i}" data-dir="-1" title="위로">▲</button><button class="icon" data-mv="${i}" data-dir="1" title="아래로">▼</button>           <button class="icon" data-ren="${r.id}" title="이름 변경">✎</button><button class="icon" data-del="${r.id}" title="삭제">✕</button></li>`).join('')}</ul>       </div>     </div>     <div class="panel" style="margin-top:16px;overflow-x:auto"><h3>최근 14일 기록 <span class="muted small">칸을 눌러 지난 날짜도 체크 가능</span></h3>       <table class="rt-hist"><tr><th></th>${days.map(d => { const w = parse(d).getDay(); return `<th class="${d === t0 ? 'today' : ''} ${w === 0 ? 'sun' : w === 6 ? 'sat' : ''}">${parse(d).getDate()}<br>${WD[w]}</th>`; }).join('')}</tr>       ${S.routines.map(r => `<tr><td class="name" title="${esc(r.title)}">${esc(r.title)}</td>${days.map(d => { const on = routineDone(d).includes(r.id); return `<td class="c ${on ? 'on' : ''}" data-hd="${d}" data-hr="${r.id}">${on ? '✓' : ''}</td>`; }).join('')}</tr>`).join('')}       </table></div>`;   bindRoutineChecks(main);   $('#rtAdd').onsubmit = e => { e.preventDefault(); const r = { id: uid(), title: e.target.t.value.trim() }; S.routines.push(r); putItem('routines', r); render(); };   $$('[data-mv]', main).forEach(b => b.onclick = () => {     const i = +b.dataset.mv, j = i + +b.dataset.dir;     if (j < 0 || j >= S.routines.length) return;     [S.routines[i], S.routines[j]] = [S.routines[j], S.routines[i]];     send('PUT', 'routines/order', S.routines.map(r => r.id)); render();   });   $$('[data-ren]', main).forEach(b => b.onclick = () => {     const r = S.routines.find(x => x.id === b.dataset.ren), t = prompt('항목 이름', r.title);     if (t && t.trim()) { r.title = t.trim(); putItem('routines', r); render(); }   });   $$('[data-del]', main).forEach(b => b.onclick = () => {     if (!confirm('이 루틴 항목을 삭제할까요? (지난 기록의 체크 표시도 화면에서 사라집니다)')) return;     S.routines = S.routines.filter(x => x.id !== b.dataset.del); delItem('routines', b.dataset.del); render();   });   $$('[data-hd]', main).forEach(c => c.onclick = () => { toggleRoutine(c.dataset.hd, c.dataset.hr); render(); }); } // ───────── 메모 ───────── const noteUI = { sel: null, q: '' }; function renderNotes(main) {   if (!S.notes.find(n => n.id === noteUI.sel)) noteUI.sel = sortedNotes()[0]?.id || null;   main.innerHTML = `<div class="notes">     <div class="panel note-list"><div class="row"><input id="nq" placeholder="메모 검색" value="${esc(noteUI.q)}" style="flex:1"><button id="newNote">+ 새 메모</button></div>       <div class="nl" id="nl"></div></div>     <div class="panel editor" id="editor"></div></div>`;   drawNoteList(); drawEditor();   $('#nq').oninput = e => { noteUI.q = e.target.value; drawNoteList(); };   $('#newNote').onclick = () => {     const n = { id: uid(), title: '', body: '', pinned: false, updatedAt: nowIso() };     S.notes.push(n); noteUI.sel = n.id; noteUI.q = ''; putItem('notes', n); render();     $('#editor .ttl').focus();   }; } function sortedNotes() { return [...S.notes].sort((a, b) => (b.pinned - a.pinned) || (a.updatedAt < b.updatedAt ? 1 : -1)); } function drawNoteList() {   const q = noteUI.q.toLowerCase();   const list = sortedNotes().filter(n => !q || (n.title + ' ' + n.body).toLowerCase().includes(q));   $('#nl').innerHTML = list.map(n => `<div class="nitem ${n.id === noteUI.sel ? 'on' : ''}" data-n="${n.id}">     <div class="t">${n.pinned ? '📌 ' : ''}${esc(n.title || '(제목 없음)')}</div>     <div class="p">${n.updatedAt.slice(5, 16).replace('T', ' ')} · ${esc(n.body.slice(0, 40))}</div></div>`).join('') || '<div class="empty">메모가 없습니다</div>';   $$('[data-n]', $('#nl')).forEach(x => x.onclick = () => { noteUI.sel = x.dataset.n; drawNoteList(); drawEditor(); }); } function drawEditor() {   const n = S.notes.find(x => x.id === noteUI.sel), ed = $('#editor');   if (!n) { ed.innerHTML = '<div class="empty">왼쪽에서 메모를 선택하거나 새로 만드세요</div>'; return; }   ed.innerHTML = `<div class="row"><input class="ttl" placeholder="제목" value="${esc(n.title)}" style="flex:1">       <button class="ghost" id="pin">${n.pinned ? '📌 고정 해제' : '📌 홈에 고정'}</button><button class="danger" id="delNote">삭제</button></div>     <textarea placeholder="내용 (자동 저장)">${esc(n.body)}</textarea>     <div class="muted small">수정: ${n.updatedAt.replace('T', ' ')}</div>`;   const touch = () => { n.updatedAt = nowIso(); putItem('notes', n, 500); drawNoteList(); };   $('.ttl', ed).oninput = e => { n.title = e.target.value; touch(); };   $('textarea', ed).oninput = e => { n.body = e.target.value; touch(); };   $('#pin').onclick = () => { n.pinned = !n.pinned; putItem('notes', n); drawNoteList(); drawEditor(); };   $('#delNote').onclick = () => { if (confirm('이 메모를 삭제할까요?')) { S.notes = S.notes.filter(x => x.id !== n.id); noteUI.sel = null; delItem('notes', n.id); render(); } }; } // ───────── 스니펫 (SQL·명령어 모음) ───────── const snipUI = { q: '', tag: '' }; const LANGS = { '': '자동 판단', sql: 'SQL', text: '일반 텍스트' }; const SQL_KEYWORDS = new Set(`select from where and or not in is null like between exists any some all distinct as on using join inner left right full outer cross natural group by order having union intersect minus except case when then else end insert into values update set delete merge matched create alter drop truncate rename table index view materialized sequence synonym tablespace datafile user role profile grant revoke to commit rollback savepoint with connect start prior level nocycle rownum rowid fetch first next rows only offset partition subpartition over asc desc nulls last begin declare exception loop while for if elsif return returns procedure function package body trigger replace execute immediate cursor open close type record constant default primary key foreign references unique check constraint enable disable novalidate logging nologging parallel noparallel compress analyze explain plan statistics session system flush shrink space move online add modify column cascade purge escape for each row before after instead of global temporary preserve date timestamp interval number varchar2 char clob blob integer`.split(/\s+/)); // 그룹: 1 힌트 /*+ */, 2 주석, 3 문자열, 4 "식별자", 5 숫자, 6 바인드/치환 변수, 7 함수명(뒤에 괄호), 8 단어 const SQL_RE = /(\/\*\+[\s\S]*?\*\/)|(--[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|('(?:[^']|'')*'?)|("[^"\n]*"?)|(\b\d+(?:\.\d+)?\b)|(:[A-Za-z_]\w*|&&?[A-Za-z_]\w*)|([A-Za-z_][\w$#]*)(?=\s*\()|([A-Za-z_][\w$#]*)/g; function highlightSql(code) {   let out = '', last = 0, m;   SQL_RE.lastIndex = 0;   while ((m = SQL_RE.exec(code))) {     out += esc(code.slice(last, m.index));     const t = esc(m[0]);     if (m[1]) out += `<span class="sh">${t}</span>`;     else if (m[2]) out += `<span class="sc">${t}</span>`;     else if (m[3]) out += `<span class="ss">${t}</span>`;     else if (m[4]) out += `<span class="si">${t}</span>`;     else if (m[5]) out += `<span class="sn">${t}</span>`;     else if (m[6]) out += `<span class="sb">${t}</span>`;     else if (SQL_KEYWORDS.has(m[0].toLowerCase())) out += `<span class="sk">${t}</span>`;     else if (m[7]) out += `<span class="sf">${t}</span>`;     else out += t;     last = SQL_RE.lastIndex;   }   return out + esc(code.slice(last)); } function isSql(s) {   if (s.lang) return s.lang === 'sql';   return /sql/i.test(s.tag || '') || /^\s*(select|with|insert|update|delete|merge|create|alter|drop|truncate|grant|begin|declare|explain)\b/i.test(s.code || ''); } function editSnippet(s) {   const isNew = !s;   openForm({     title: isNew ? '스니펫 추가' : '스니펫 수정',     values: s || {},     fields: [       { key: 'title', label: '제목', required: true, placeholder: '예: 테이블스페이스 사용률' },       { key: 'tag', label: '분류', list: [...new Set(S.snippets.map(x => x.tag).filter(Boolean))], placeholder: '예: SQL, OS, RMAN', half: true },       { key: 'lang', label: '표시 형식', type: 'select', options: LANGS, half: true },       { key: 'code', label: '내용', type: 'textarea', rows: 12, mono: true },       { key: 'memo', label: '설명', type: 'textarea', rows: 2 },     ],     onSubmit: v => {       const item = isNew ? { id: uid(), ...v, updatedAt: nowIso() } : Object.assign(s, v, { updatedAt: nowIso() });       if (isNew) S.snippets.push(item);       putItem('snippets', item);     },     onDelete: isNew ? null : () => { S.snippets = S.snippets.filter(x => x.id !== s.id); delItem('snippets', s.id); },   }); } async function copyText(text) {   try { await navigator.clipboard.writeText(text); }   catch { const ta = document.createElement('textarea'); ta.value = text; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); }   setStatus('클립보드에 복사됨'); } function renderSnippets(main) {   const tags = [...new Set(S.snippets.map(x => x.tag).filter(Boolean))].sort();   main.innerHTML = `<div class="row" style="margin-bottom:14px"><h2 style="margin:0">스니펫</h2><span class="muted small">자주 쓰는 SQL·명령어를 저장하고 바로 복사</span><span class="spacer"></span>     <select id="stag"><option value="">모든 분류</option>${tags.map(t => `<option ${t === snipUI.tag ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>     <input id="sq" placeholder="검색 (제목·내용)" value="${esc(snipUI.q)}"><button id="addSnip">+ 스니펫</button></div>     <div class="snips" id="snips"></div>`;   const draw = () => {     const q = snipUI.q.toLowerCase();     const list = S.snippets.filter(s => (!snipUI.tag || s.tag === snipUI.tag) && (!q || (s.title + ' ' + s.code + ' ' + (s.memo || '')).toLowerCase().includes(q)))       .sort((a, b) => a.title.localeCompare(b.title, 'ko'));     $('#snips').innerHTML = list.map(s => `<div class="panel snip" data-s="${s.id}">       <div class="row"><b>${esc(s.title)}</b>${s.tag ? `<span class="tag">${esc(s.tag)}</span>` : ''}<span class="spacer"></span>         <button class="ghost" data-copy>복사</button><button class="icon" data-edit title="수정">✎</button></div>       ${s.memo ? `<div class="muted small">${esc(s.memo)}</div>` : ''}<pre>${isSql(s) ? highlightSql(s.code || '') : esc(s.code)}</pre></div>`).join('')       || '<div class="empty">스니펫이 없습니다</div>';   };   draw();   $('#sq').oninput = e => { snipUI.q = e.target.value; draw(); };   $('#stag').onchange = e => { snipUI.tag = e.target.value; draw(); };   $('#addSnip').onclick = () => editSnippet(null);   $('#snips').addEventListener('click', e => {     const card = e.target.closest('[data-s]'); if (!card) return;     const s = S.snippets.find(x => x.id === card.dataset.s);     if (e.target.hasAttribute('data-copy')) copyText(s.code);     else if (e.target.hasAttribute('data-edit')) editSnippet(s);   }); } // ───────── 홈 (대시보드) ───────── function renderHome(main) {   const t0 = today(), d0 = new Date();   const open = S.todos.filter(t => !t.done);   const over = open.filter(t => t.due && t.due < t0), dueToday = open.filter(t => t.due === t0);   const weekAgo = addDays(t0, -6);   const doneWeek = S.todos.filter(t => t.done && t.doneAt && t.doneAt.slice(0, 10) >= weekAgo).length;   const rDone = S.routines.filter(r => routineDone(t0).includes(r.id)).length;   // 오늘 집중할 일: 지연 + 오늘 마감 + 3일 이내 + 높은 우선순위   const focus = sortTodos(open.filter(t => (t.due && t.due <= addDays(t0, 3)) || t.priority === 'high'));   // 앞으로 14일 일정   const upcoming = [];   for (let i = 0; i < 14; i++) {     const d = addDays(t0, i);     eventsOn(d).forEach(e => { if (i === 0 || !occursOn(e, addDays(d, -1)) || ['daily', 'weekdays', 'weekly'].includes(e.repeat)) upcoming.push({ d, e }); });     if (S.holidays[d]) upcoming.push({ d, hol: S.holidays[d] });   }   const ddays = S.events.filter(e => e.dday).map(e => ({ e, d: nextOccurrence(e, t0) })).filter(x => x.d).sort((a, b) => a.d < b.d ? -1 : 1);   const pinned = sortedNotes().filter(n => n.pinned);   const h = d0.getHours();   main.innerHTML = `     <div class="hello"><span class="date">${d0.getFullYear()}년 ${d0.getMonth() + 1}월 ${d0.getDate()}일 ${WD[d0.getDay()]}요일</span>       <span class="muted">${h < 12 ? '좋은 아침입니다' : h < 18 ? '오후도 힘내세요' : '오늘도 수고하셨습니다'}${S.holidays[t0] ? ` · 오늘은 ${esc(S.holidays[t0])}` : ''}</span></div>     <div class="stats">       <div class="stat ${over.length ? 'danger' : ''}" data-go="todo:today"><div class="n">${over.length}</div><div class="l">마감 지난 할 일</div></div>       <div class="stat ${dueToday.length ? 'warn' : ''}" data-go="todo:today"><div class="n">${dueToday.length}</div><div class="l">오늘 마감</div></div>       <div class="stat" data-go="board"><div class="n">${open.length}</div><div class="l">미완료 · 진행중 ${open.filter(t => t.status === 'doing').length}건</div></div>       <div class="stat ok" data-go="todo:done"><div class="n">${doneWeek}</div><div class="l">최근 7일 완료</div></div>       <div class="stat ${S.routines.length && rDone === S.routines.length ? 'ok' : ''}" data-go="routine"><div class="n">${rDone}/${S.routines.length}</div><div class="l">오늘 루틴</div></div>     </div>     ${quickAddHtml()}     <div class="grid g2">       <div class="panel"><h3>집중할 일 <span class="muted small">지연 · 3일 내 마감 · 높은 우선순위</span></h3>         <ul class="list" id="focusList">${focus.map(todoItemHtml).join('') || '<li class="empty">급한 일이 없습니다 👍</li>'}</ul></div>       <div class="panel"><h3>다가오는 일정 <span class="muted small">14일</span></h3>         <ul class="list">${upcoming.map(({ d, e, hol }) => hol           ? `<li class="item"><span class="swatch" style="background:var(--sun)"></span><div class="body"><div class="title" style="color:var(--sun)">${esc(hol)}</div><div class="meta">${fmtDay(d)}</div></div></li>`           : `<li class="item" data-ev="${e.id}" style="cursor:pointer"><span class="swatch" style="background:${e.color}"></span><div class="body"><div class="title">${esc(e.title)}</div>             <div class="meta">${d === t0 ? '<b>오늘</b>' : fmtDay(d)}${e.time ? ' ' + e.time : ''}${e.endDate && e.endDate > e.date ? ` ~ ${fmtDay(e.endDate)}` : ''}</div></div></li>`).join('')           || '<li class="empty">예정된 일정이 없습니다</li>'}</ul></div>       <div class="panel"><h3>오늘 루틴</h3>${routineChecklistHtml(t0)}</div>       <div class="panel"><h3>D-Day</h3>${ddays.map(({ e, d }) => { const n = diffDays(t0, d); return `<div class="dday"><span>${esc(e.title)} <span class="muted small">${fmtDay(d)}</span></span><b>${n === 0 ? 'D-Day' : 'D-' + n}</b></div>`; }).join('')         || '<div class="empty small">일정 추가 시 "D-Day로 표시"를 체크하면 여기에 나옵니다</div>'}         ${pinned.length ? `<h3 style="margin-top:18px">고정 메모</h3>${pinned.map(n => `<div class="item" data-note="${n.id}" style="cursor:pointer"><div class="body"><div class="title">📌 ${esc(n.title || '(제목 없음)')}</div><div class="memo">${esc(n.body.slice(0, 200))}</div></div></div>`).join('')}` : ''}       </div>     </div>`;   bindQuickAdd(main);   bindTodoList($('#focusList'));   bindRoutineChecks(main);   $$('[data-go]', main).forEach(x => x.onclick = () => { const [v, f] = x.dataset.go.split(':'); if (f) todoUI.filter = f; location.hash = v; });   $$('[data-ev]', main).forEach(x => x.onclick = () => editEvent(S.events.find(e => e.id === x.dataset.ev)));   $$('[data-note]', main).forEach(x => x.onclick = () => { noteUI.sel = x.dataset.note; location.hash = 'notes'; }); } // ───────── 라우팅 / 초기화 ───────── const VIEWS = { home: renderHome, todo: renderTodo, board: renderBoard, calendar: renderCalendar, routine: renderRoutine, notes: renderNotes, snippets: renderSnippets }; // 예전 데이터·가져온 파일에 status 가 없거나 done 과 어긋나면 맞춤 function normalizeTodos() {   for (const t of S.todos) {     if (!STATUS[t.status] || (t.status === 'done') !== !!t.done) t.status = t.done ? 'done' : (t.status === 'doing' ? 'doing' : 'todo');   } } function render() {   const v = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : 'home';   $$('nav a').forEach(a => a.classList.toggle('active', a.dataset.view === v));   const main = $('#main'), y = window.scrollY;   VIEWS[v](main);   window.scrollTo(0, y); } window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); }); function applyTheme(t) { document.documentElement.dataset.theme = t; try { localStorage.setItem('theme', t); } catch { } } $('#btnTheme').onclick = () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); $('#btnExport').onclick = () => {   const blob = new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' });   const a = document.createElement('a');   a.href = URL.createObjectURL(blob);   a.download = `my_dashboard_backup_${today()}.json`;   a.click();   URL.revokeObjectURL(a.href); }; $('#btnImport').onclick = () => $('#importFile').click(); $('#importFile').onchange = async e => {   const file = e.target.files[0]; e.target.value = '';   if (!file) return;   try {     const data = JSON.parse(await file.text());     if (!confirm('현재 데이터를 이 파일 내용으로 모두 바꿉니다. 계속할까요?')) return;     const valid = {};     for (const k of Object.keys(S)) if (k in data && Array.isArray(data[k]) === Array.isArray(S[k]) && typeof data[k] === 'object') valid[k] = data[k];     if (!Object.keys(valid).length) throw new Error('empty');     await request('POST', 'import', valid);     Object.assign(S, await fetch('/api/all').then(r => r.json()));     normalizeTodos();     render();   } catch { alert('가져오기에 실패했습니다. 내보내기로 만든 백업 파일인지 확인하세요.'); } }; // 자정이 지나면 화면 갱신 (켜 둔 채로 다음 날이 되어도 '오늘'이 맞도록) let lastDay = today(); setInterval(() => { if (today() !== lastDay) { lastDay = today(); if (!$('#dlg').open) render(); } }, 60000); (async function init() {   let theme = 'light';   try { theme = localStorage.getItem('theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } catch { }   applyTheme(theme);   try {     const r = await fetch('/api/all');     Object.assign(S, await r.json());     normalizeTodos();     setStatus('불러옴');   } catch {     setStatus('서버에 연결할 수 없습니다 — MyDashboard.exe 로 다시 실행하세요', true);   }   render(); })();
+````
+
+### `seed/holidays.json`
+
+````json
+{   "2026-01-01": "신정",   "2026-02-16": "설날 연휴",   "2026-02-17": "설날",   "2026-02-18": "설날 연휴",   "2026-03-01": "삼일절",   "2026-03-02": "대체공휴일",   "2026-05-05": "어린이날",   "2026-05-24": "부처님오신날",   "2026-05-25": "대체공휴일",   "2026-06-03": "지방선거",   "2026-06-06": "현충일",   "2026-08-15": "광복절",   "2026-08-17": "대체공휴일",   "2026-09-24": "추석 연휴",   "2026-09-25": "추석",   "2026-09-26": "추석 연휴",   "2026-10-03": "개천절",   "2026-10-05": "대체공휴일",   "2026-10-09": "한글날",   "2026-12-25": "성탄절",   "2027-01-01": "신정",   "2027-02-06": "설날 연휴",   "2027-02-07": "설날",   "2027-02-08": "설날 연휴",   "2027-02-09": "대체공휴일",   "2027-03-01": "삼일절",   "2027-05-05": "어린이날",   "2027-05-13": "부처님오신날",   "2027-06-06": "현충일",   "2027-08-15": "광복절",   "2027-08-16": "대체공휴일",   "2027-09-14": "추석 연휴",   "2027-09-15": "추석",   "2027-09-16": "추석 연휴",   "2027-10-03": "개천절",   "2027-10-04": "대체공휴일",   "2027-10-09": "한글날",   "2027-10-11": "대체공휴일",   "2027-12-25": "성탄절",   "2027-12-27": "대체공휴일" }
+````
+
+### `seed/routines.json`
+
+````json
+[   {"id": "r1", "title": "백업(RMAN) 성공 여부 확인"},   {"id": "r2", "title": "alert log 오류(ORA-) 확인"},   {"id": "r3", "title": "테이블스페이스·FRA 사용률 확인"},   {"id": "r4", "title": "장시간 실행 세션·Lock 확인"} ]
+````

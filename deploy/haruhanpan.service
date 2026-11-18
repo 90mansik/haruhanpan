@@ -1,0 +1,23 @@
+# /etc/systemd/system/haruhanpan.service
+[Unit]
+Description=Haruhanpan personal dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=haruhanpan
+WorkingDirectory=/opt/haruhanpan
+EnvironmentFile=/etc/haruhanpan.env
+ExecStart=/usr/bin/java -Xms64m -Xmx384m -XX:+UseSerialGC -jar /opt/haruhanpan/haruhanpan.jar
+SuccessExitStatus=143
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/haruhanpan
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

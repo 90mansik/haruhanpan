@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>하루한판</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="theme-color" content="#ffffff">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="하루한판">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">하루<span>한판</span></a>
+    <div class="tools">
+      <a class="small hidden home-pending" id="pending" href="/board">승인 대기</a>
+      <button class="icon" id="btn-theme" data-m="라이트/다크 전환" title="라이트/다크 전환" aria-label="테마 전환">◐</button>
+      <span class="muted small" id="me-name" data-m-info></span>
+      <button class="ghost small" id="btn-logout" data-m="로그아웃">로그아웃</button>
+    </div>
+  </div>
+</header>
+<main id="main" class="home-main">
+  <div class="hello"><h1 id="hello">안녕하세요</h1><span class="muted" id="today"></span></div>
+  <div class="apps">
+    <a class="panel app-card" href="/board" id="card-board">
+      <div class="app-icon">📋</div>
+      <div class="app-body">
+        <h2>하루한판</h2>
+        <p class="muted small">할 일 · 보드 · 일정 · 루틴 · 메모 · 스니펫</p>
+        <div class="app-stats" id="board-stats"><span class="muted small">불러오는 중…</span></div>
+      </div>
+    </a>
+    <a class="panel app-card" href="/ledger" id="card-ledger">
+      <div class="app-icon">💰</div>
+      <div class="app-body">
+        <h2>하루가계부</h2>
+        <p class="muted small" id="ledger-sub">수입 · 지출 · 저축 · 정기결제 · 연간결산</p>
+        <div class="app-stats" id="ledger-stats"><span class="muted small">불러오는 중…</span></div>
+      </div>
+    </a>
+  </div>
+</main>
+<script src="/home.js"></script>
+<script src="/menu.js"></script>
+</body>
+</html>
