@@ -5,7 +5,7 @@
  * - 화면 이동이 실패하면(인터넷 끊김·서버 중단) offline.html 을 보여 준다. 그 화면에 필요한 파일만 미리 저장한다.
  * 저장 목록이 바뀌면 VERSION 을 올린다 (예전 저장본은 activate 때 지운다).
  */
-const VERSION = 'haru-v2';
+const VERSION = 'haru-v3';
 const OFFLINE = ['/offline.html', '/style.css', '/theme.js', '/favicon.svg'];
 
 self.addEventListener('install', e => {
