@@ -17,7 +17,8 @@ log() { echo "[deploy $(date -u +%FT%TZ)] $*" | tee -a deploy.log; }
 
 healthy() {
   for _ in $(seq 1 45); do
-    if curl -fsS -m 3 http://127.0.0.1:8765/api/health | grep -q '"db":"ok"'; then return 0; fi
+    # 앱이 뜨는 동안은 연결이 거절되므로 오류 출력은 버린다
+    if curl -fs -m 3 http://127.0.0.1:8765/api/health 2>/dev/null | grep -q '"db":"ok"'; then return 0; fi
     sleep 2
   done
   return 1
@@ -29,7 +30,7 @@ log "배포 시작: $TAG (지금: ${CURRENT:-없음})"
 TAG="$TAG" docker compose -f compose.yml pull
 up "$TAG"
 if healthy; then
-  echo "$TAG" > current-tag
+  echo "$TAG" > current-tag && chmod 644 current-tag
   log "배포 완료: $TAG"
   docker image prune -f --filter "until=168h" >/dev/null || true
   exit 0
