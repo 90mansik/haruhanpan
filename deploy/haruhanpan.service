@@ -1,3 +1,4 @@
+# (예전 방식, 도커 전환 전) systemd 로 jar 를 직접 실행할 때 쓰던 서비스 파일. 지금은 deploy/compose.yml + deploy.sh 를 쓴다.
 # /etc/systemd/system/haruhanpan.service
 [Unit]
 Description=Haruhanpan personal dashboard

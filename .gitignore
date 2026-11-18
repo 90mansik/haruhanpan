@@ -2,7 +2,8 @@ HELP.md
 .gradle
 
 ### 하루한판: 데이터·비밀값은 저장소에 넣지 않음 ###
-data/
+# 로컬 DB 폴더는 맨 위 data/ 만 (앞의 / 가 없으면 src/.../haruhanpan/data 패키지까지 빠진다)
+/data/
 *.env
 wallet/
 .DS_Store

@@ -1,7 +1,7 @@
 # OCI 배포 순서
 
 ```
-브라우저 ──HTTPS──▶ [OCI Always Free VM]  Caddy(443) ──▶ java -jar haruhanpan.jar (127.0.0.1:8765)
+브라우저 ──HTTPS──▶ [OCI Always Free VM]  Caddy(443) ──▶ 도커 컨테이너 haruhanpan (127.0.0.1:8765)
                                                               └── JDBC(TLS) ──▶ [Autonomous DB Always Free]
                     /var/lib/haruhanpan/  password.hash, remember.key, backup/*.json
 ```
@@ -18,75 +18,110 @@
   GRANT CREATE SESSION, CREATE TABLE TO haruhanpan;
   ```
   테이블은 앱이 처음 시작할 때 Flyway 가 만든다 (`src/main/resources/db/migration`).
-- [ ] **Compute VM**: Ampere A1 Flex 1 OCPU / 6GB, Ubuntu 24.04, 공인 IP.
+- [ ] **Compute VM**: Ampere A1 Flex (ARM) 1~2 OCPU / 6~12GB, Oracle Linux 8 또는 Ubuntu, 공인 IP. 이미지가 ARM 용이라 ARM VM 이어야 한다.
   "Out of host capacity" 로 만들어지지 않으면 시간을 두고 다시 시도하거나 AMD E2.1.Micro(1GB)로 만든다. 서비스 파일의 `-Xmx384m` 은 1GB 에서도 돌도록 맞춘 값이다.
 - [ ] **VCN 보안 목록**: 수신 TCP 80, 443 허용. 22 는 내 IP 만.
 - [ ] **도메인 DNS**: A 레코드 → VM 공인 IP.
 
-## 2. 서버 설치 (VM 에 SSH 접속 후)
+## 2. 서버 준비 (VM 에 SSH 접속 후, 처음 한 번)
 
-OCI Ubuntu 이미지는 iptables 로 막혀 있어서 VM 안의 방화벽도 열어야 한다.
+Oracle Linux 8 (aarch64, 사용자 `opc`) 기준. Ubuntu 면 `dnf` → `apt`, `firewall-cmd` → `ufw`/`iptables`.
 
 ```bash
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
-sudo netfilter-persistent save
+# 방화벽: 웹만 연다 (앱 포트 8765 는 열지 않는다)
+sudo firewall-cmd --permanent --add-service=http --add-service=https && sudo firewall-cmd --reload
+
+# Docker CE + compose
+sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+
+# Caddy (HTTPS, 인증서 자동)
+sudo dnf --enablerepo=ol8_developer_EPEL install -y caddy
+
+# 데이터 폴더 (백업·로그인 유지 키). 컨테이너는 이 uid:gid 로 돈다 → compose.yml 의 user 와 맞춘다
+sudo useradd --system --no-create-home --shell /sbin/nologin haruhanpan
+id haruhanpan      # 예: uid=985 gid=983 → deploy/compose.yml 의 user: "985:983"
+sudo install -o haruhanpan -g haruhanpan -m 700 -d /var/lib/haruhanpan
+
+# 배포 계정: GitHub Actions 전용. sudo 없음, docker 만. 키는 deploy.sh 만 실행할 수 있다
+sudo useradd --create-home deploy && sudo usermod -aG docker deploy && sudo passwd -l deploy
+sudo install -o root -g deploy -m 775 -d /opt/haruhanpan
+sudo install -o root -g deploy -m 644 compose.yml /opt/haruhanpan/
+sudo install -o root -g deploy -m 755 deploy.sh /opt/haruhanpan/
 ```
 
-Java 21, Caddy, 전용 계정, 폴더를 만든다.
+## 3. 비밀값 (VM 에만)
 
 ```bash
-sudo apt update && sudo apt install -y openjdk-21-jre-headless caddy
-sudo useradd --system --home /opt/haruhanpan --shell /usr/sbin/nologin haruhanpan
-sudo mkdir -p /opt/haruhanpan /var/lib/haruhanpan
-sudo chown haruhanpan: /var/lib/haruhanpan && sudo chmod 700 /var/lib/haruhanpan
+sudo install -o root -g deploy -m 640 haruhanpan.env.example /etc/haruhanpan.env
+sudo nano /etc/haruhanpan.env          # ORA_USER / ORA_PASSWORD / ORA_URL (+ Google 로그인 값)
 ```
 
-## 3. 앱 올리기 (내 PC 에서)
-
+사이트 관리자(아이디 `haru`) 비밀번호 (12자 이상). 컨테이너가 시작할 때 적용하고 파일을 지운다.
 ```bash
-./gradlew bootJar
-scp build/libs/haruhanpan.jar deploy/haruhanpan.service deploy/Caddyfile deploy/haruhanpan.env.example ubuntu@<VM IP>:~
+sudo docker run --rm -it --user 985:983 -v /var/lib/haruhanpan:/var/lib/haruhanpan \
+  -e HARU_DATA_DIR=/var/lib/haruhanpan --entrypoint java ghcr.io/90mansik/haruhanpan:latest \
+  -jar /app/haruhanpan.jar hash-password
 ```
 
-## 4. 설정·실행 (VM 에서)
+## 4. CI/CD 연결 (GitHub)
+
+1. 배포 키를 만든다 (내 PC): `ssh-keygen -t ed25519 -N "" -f deploy_key`
+2. VM `/home/deploy/.ssh/authorized_keys` 에 공개키를 **명령 제한과 함께** 넣는다 (700/600, 소유자 deploy):
+   ```
+   command="/opt/haruhanpan/deploy.sh",restrict ssh-ed25519 AAAA... github-actions-deploy
+   ```
+   이 키로는 쉘·포트 포워딩이 안 되고, 넘긴 값(이미지 태그)만 deploy.sh 로 전달된다.
+3. 저장소 Settings → Environments → **production**: Required reviewers(나), Deployment branches = `main`
+4. production 환경 secrets:
+   | 이름 | 값 |
+   |---|---|
+   | `DEPLOY_SSH_KEY` | `deploy_key` (개인키 전체) |
+   | `DEPLOY_KNOWN_HOSTS` | `ssh-keyscan -t ed25519 <VM IP>` 결과 |
+   | `DEPLOY_HOST` | VM 공인 IP |
+5. 처음 이미지가 올라가면 GitHub → Packages → haruhanpan → Package settings → **Change visibility → Public**
+   (서버가 로그인 없이 받도록. 이미지에는 비밀값이 없다)
+
+흐름 (`.github/workflows/ci.yml`):
+```
+PR·push ─ 테스트
+main push ─ 테스트 → ARM 이미지 → ghcr.io/90mansik/haruhanpan:sha-<커밋 7자리>, latest
+          → [production 승인] → ssh deploy@VM sha-xxxxxxx
+          → deploy.sh: pull → up → /api/health 확인 (최대 90초), 실패하면 직전 태그로 되돌림
+```
+
+## 5. HTTPS
 
 ```bash
-sudo install -o root -g root -m 644 ~/haruhanpan.jar /opt/haruhanpan/haruhanpan.jar
-sudo install -o root -g root -m 600 ~/haruhanpan.env.example /etc/haruhanpan.env
-sudo nano /etc/haruhanpan.env          # ORA_USER / ORA_PASSWORD / ORA_URL 입력
-
-# 사이트 관리자(아이디 haru) 비밀번호 설정 (12자 이상) → /var/lib/haruhanpan/password.hash
-# 서버가 시작할 때 이 파일을 관리자 비밀번호로 적용하고 지운다
-sudo -u haruhanpan HARU_DATA_DIR=/var/lib/haruhanpan java -jar /opt/haruhanpan/haruhanpan.jar hash-password
-
-sudo install -m 644 ~/haruhanpan.service /etc/systemd/system/haruhanpan.service
-sudo systemctl daemon-reload && sudo systemctl enable --now haruhanpan
-journalctl -u haruhanpan -f            # "Started HaruhanpanApplication" 확인
-
-sudo install -m 644 ~/Caddyfile /etc/caddy/Caddyfile
+sudo install -m 644 Caddyfile /etc/caddy/Caddyfile
 sudo nano /etc/caddy/Caddyfile         # <내 도메인> 을 실제 도메인으로
-sudo systemctl reload caddy
+sudo systemctl enable --now caddy
 ```
 
-- [ ] `https://<도메인>` → 로그인 화면이 뜨는지 확인
-- [ ] `http://<도메인>` → https 로 자동 이동하는지 확인
-- [ ] 아이디 `haru` 로 로그인 후 7개 탭 동작, 새로고침 후에도 데이터가 남는지 확인
-- [ ] 상단 오른쪽 이름 버튼(내 계정)에서 표시 이름을 바꾼다
-- [ ] "＋ 새 팀 공간" → ⚙ 공간 설정 → 초대 링크를 만들어 팀원에게 전달한다 (팀원은 그 링크로 가입)
+- [ ] `https://<도메인>` → 로그인 화면, `http://` → https 로 이동
+- [ ] 아이디 `haru` 로 로그인 → 홈에서 하루한판·하루가계부 동작, 새로고침 후에도 데이터 유지
 
 ## 운영
 
 | 작업 | 방법 |
 |---|---|
-| 업데이트 | 3번처럼 jar 업로드 → `sudo install … /opt/haruhanpan/haruhanpan.jar` → `sudo systemctl restart haruhanpan` |
-| 로그 | `journalctl -u haruhanpan -f` (로그인 성공·실패 IP 도 여기에 남음) |
+| 업데이트 | `main` 에 push → Actions 에서 production **승인** → 자동 배포·헬스 체크 |
+| 지금 버전 | VM `cat /opt/haruhanpan/current-tag`, 기록은 `/opt/haruhanpan/deploy.log` |
+| 되돌리기 | `sudo -u deploy /opt/haruhanpan/deploy.sh sha-<예전 커밋>` (GHCR 에 태그별로 남아 있다) |
+| 로그 | `sudo docker logs -f haruhanpan` (로그인 성공·실패 IP 도 여기에) |
+| 재시작 | `cd /opt/haruhanpan && sudo -u deploy docker compose restart` |
 | 비밀번호 변경 | 각자 화면의 **내 계정**에서 바꾼다 |
 | 팀원 비밀번호 분실 | 사이트 관리자가 ⚙ 공간 설정 → 멤버 옆 **비밀번호 재설정 링크**(1일·1회용) |
-| 관리자 비밀번호 분실 | 4번의 `hash-password` 다시 실행 → `sudo systemctl restart haruhanpan` |
-| 백업 | 매일 03:10 `/var/lib/haruhanpan/backup/haruhanpan_YYYY-MM-DD.json`, 30일 보관 (모든 공간). 가져오기 직전에도 자동 백업 |
+| 관리자 비밀번호 분실 | 3번의 `hash-password` 다시 실행 → `sudo -u deploy docker compose -f /opt/haruhanpan/compose.yml restart` |
+| 백업 | 매일 03:10 `/var/lib/haruhanpan/backup/haruhanpan_YYYY-MM-DD.json`, 30일 보관 (모든 공간, 가계부 포함) |
 | 서버 밖 백업 | 화면의 **내보내기**로 공간별 JSON 을 가끔 내 PC 에 저장한다 |
 | 복원 | 해당 공간을 고른 뒤 백업 JSON 을 화면의 **가져오기**로 올린다 (서버 백업 파일이면 안의 공간을 골라 줌) |
+
+### 서버 보안
+- SSH 는 키 전용(비밀번호 로그인 끔), `PermitRootLogin no`
+- fail2ban: 10분에 5번 실패하면 1일 차단, 반복하면 1주. 상태 `sudo fail2ban-client status sshd`,
+  내가 막혔으면 OCI 콘솔의 인스턴스 콘솔 연결로 들어가 `sudo fail2ban-client set sshd unbanip <IP>`
 
 ## Google 로그인 (선택)
 
