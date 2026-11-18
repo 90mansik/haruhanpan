@@ -7,10 +7,10 @@
   const root = document.documentElement;
   root.dataset.theme = dark ? 'dark' : 'light';
 
-  // 상단 바 색 = style.css 의 --panel (라이트 #fff, 다크 #1e2125). 화면에서 테마를 바꾸면 따라 바꾼다
+  // 상단 바 색 = style.css 의 --surface (라이트 #fff, 다크 #262626). 화면에서 테마를 바꾸면 따라 바꾼다
   const syncBar = () => {
     const meta = document.querySelector('meta[name=theme-color]');
-    if (meta) meta.content = root.dataset.theme === 'dark' ? '#1e2125' : '#ffffff';
+    if (meta) meta.content = root.dataset.theme === 'dark' ? '#262626' : '#ffffff';
   };
   syncBar();
   new MutationObserver(syncBar).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
