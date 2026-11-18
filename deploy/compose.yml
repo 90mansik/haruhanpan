@@ -1,0 +1,21 @@
+# 서버의 /opt/haruhanpan/compose.yml (deploy.sh 가 TAG 를 넘겨 실행)
+# 이미지: GitHub Actions 가 main 에 push 할 때 만든다 → ghcr.io/90mansik/haruhanpan:sha-<커밋 7자리>
+services:
+  app:
+    image: ghcr.io/90mansik/haruhanpan:${TAG:-latest}
+    container_name: haruhanpan
+    restart: unless-stopped
+    # 서버의 데이터 폴더 소유자와 같은 uid:gid (id haruhanpan)
+    user: "985:983"
+    # DB 접속 정보 등 비밀값. 서버에만 있다 (root:deploy 640)
+    env_file: /etc/haruhanpan.env
+    environment:
+      HARU_DATA_DIR: /var/lib/haruhanpan
+    volumes:
+      - /var/lib/haruhanpan:/var/lib/haruhanpan
+    # 서버 밖으로는 열지 않는다. HTTPS 는 서버의 Caddy 가 맡는다
+    ports:
+      - "127.0.0.1:8765:8765"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
