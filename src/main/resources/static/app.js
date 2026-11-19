@@ -858,6 +858,7 @@ function renderHome(root) {
     <h1>${d.getMonth() + 1}월 ${d.getDate()}일 ${WD[d.getDay()]}요일</h1>
     <span class="muted">${hol ? `🎉 ${esc(hol)} · ` : ''}${esc(S.me.name)}님, 오늘도 한 판 해볼까요?</span>
     <span class="muted small">· ${esc(scope)}${teams.length ? ' (팀 할 일은 나에게 배정된 것만)' : ''}</span>
+    <button class="ghost small hello-reset ${homeLayout() ? '' : 'hidden'}" data-act="layout-reset" title="카드를 처음 배치로">↺ 기본 배치로</button>
   </div>
   <div class="stats">
     <div class="panel stat danger link" data-go="todo" data-filter="today"><div class="label">지연</div><div class="value">${over.length}</div></div>
@@ -866,37 +867,35 @@ function renderHome(root) {
     <div class="panel stat link" data-go="routine"><div class="label">오늘 루틴</div><div class="value">${routinesDone}<small> / ${todayRoutines.length}</small></div><div class="bar"><i style="width:${pct}%"></i></div></div>
   </div>
   ${weekStrip()}
-  <div class="home-grid3">
-    <div class="stack">
+  <div class="home-grid3" id="home-cols">${homeColumns({
+    focus: `
       <section class="panel"><div class="panel-head"><h2>집중할 일</h2><span class="grow"></span>${canEdit() ? '<button class="ghost small" data-act="add-todo">+ 추가</button>' : ''}</div>
-        <div id="focus">${focus.length ? focus.map(t => todoRow(t, { showSpace: isMixed() })).join('') : '<div class="empty">급한 일이 없어요 👍</div>'}</div></section>
-      ${teams.map(teamPanel).join('')}
-      ${recentWikiPanel()}
-    </div>
-    <div class="stack">
+        <div id="focus">${focus.length ? focus.map(t => todoRow(t, { showSpace: isMixed() })).join('') : '<div class="empty">급한 일이 없어요 👍</div>'}</div></section>`,
+    team: teams.map(teamPanel).join(''),
+    wiki: recentWikiPanel(),
+    upcoming: `
       <section class="panel"><h2>앞으로 14일 일정</h2>
         ${days.length ? days.map(([day, evs]) => `<div class="day-group">
           <div class="d ${day === t0 ? 'today' : ''}">${fmtDate(day)}${day === t0 ? ' · 오늘' : ''}${S.holidays[day] ? ` <span style="color:var(--sun)">${esc(S.holidays[day])}</span>` : ''}</div>
           ${evs.map(e => `<div class="ev-line" data-ev="${esc(e.id)}" style="cursor:pointer"><span class="ev-dot" style="background:${esc(e.color || COLORS[0])}"></span>${e.time ? `<span class="muted small">${esc(e.time)}</span>` : ''}${esc(e.title)} ${mixedTag(e.spaceId)}</div>`).join('')}
-        </div>`).join('') : '<div class="empty">예정된 일정이 없습니다</div>'}</section>
+        </div>`).join('') : '<div class="empty">예정된 일정이 없습니다</div>'}</section>`,
+    dday: `
       <section class="panel"><h2>D-Day</h2>
         ${ddays.length ? ddays.map(([e, n]) => `<div class="dday-row" data-ev="${esc(e.id)}" style="cursor:pointer"><span>${esc(e.title)} ${mixedTag(e.spaceId)}</span><b>${n === 0 ? 'D-Day' : n > 0 ? 'D-' + n : 'D+' + -n}</b></div>`).join('')
-          : '<div class="empty">일정에서 "D-Day 로 표시"를 켜세요</div>'}</section>
-    </div>
-    <div class="stack hg-side">
+          : '<div class="empty">일정에서 "D-Day 로 표시"를 켜세요</div>'}</section>`,
+    routine: `
       <section class="panel"><h2>오늘 루틴</h2>
         ${routineGroups.length ? routineGroups.map(([s, rs]) => `
           ${routineGroups.length > 1 ? `<div class="group-label">${esc(s.name)}</div>` : ''}
           ${rs.map(r => {
             const c = iChecked(t0, r.id);
             return `<label class="routine-item ${c ? 'checked' : ''}"><input type="checkbox" data-rid="${esc(r.id)}" ${c ? 'checked' : ''}><span class="grow">${esc(r.title)}</span></label>`;
-          }).join('')}`).join('') : '<div class="empty">루틴 탭에서 추가하세요</div>'}</section>
-      <section class="panel" id="home-ledger"><div class="panel-head"><h2>이번 달 가계부</h2><span class="grow"></span><a class="small" href="/ledger" data-ledger>하루가계부 →</a></div><div class="empty small">불러오는 중…</div></section>
+          }).join('')}`).join('') : '<div class="empty">루틴 탭에서 추가하세요</div>'}</section>`,
+    pinned: `
       <section class="panel"><h2>고정 페이지</h2>
         ${pinned.length ? pinned.map(n => `<div class="note-card" data-note="${esc(n.id)}"><b>${esc(n.icon || '📄')} ${esc(n.title || '(제목 없음)')}</b> ${mixedTag(n.spaceId)}<div class="body">${esc((n.body || '').slice(0, 200))}</div></div>`).join('')
-          : '<div class="empty">하루위키에서 📌 홈에 고정하면 여기에 보여요</div>'}</section>
-    </div>
-  </div>`;
+          : '<div class="empty">하루위키에서 📌 홈에 고정하면 여기에 보여요</div>'}</section>`,
+  })}</div>`;
 
   bindTodoRows(root);
   on(root, 'click', '[data-go]', el => {
@@ -914,8 +913,71 @@ function renderHome(root) {
   on(root, 'change', '[data-rid]', el => { setRoutineCheck(byId(S.routines, el.dataset.rid), t0, el.checked); render(); });
   on(root, 'click', '[data-wday]', el => { UI.calSel = el.dataset.wday; UI.calMonth = el.dataset.wday.slice(0, 7); location.hash = 'calendar'; });
   on(root, 'click', '[data-page]', el => { UI.noteId = el.dataset.page; location.hash = 'wiki'; });
-  on(root, 'click', '[data-ledger]', (el, e) => { e.preventDefault(); location.href = '/ledger?space=' + encodeURIComponent(viewTeam() || personalId()); });
-  fillHomeLedger(root);
+  on(root, 'click', '[data-act="layout-reset"]', () => { saveHomeLayout(null); render(); });
+  attachCardDrag(root.querySelector('#home-cols'));
+}
+
+// ───────── 홈 카드 배치 (끌어서 옮기기) ─────────
+// 배치는 이 브라우저에 저장한다 (기기마다 다르게 둘 수 있게). 새로 생긴 카드는 기본 칸 끝에 붙는다
+const HOME_LAYOUT_DEFAULT = [['focus', 'team', 'wiki'], ['upcoming', 'dday'], ['routine', 'pinned']];
+function homeLayout() {
+  try {
+    const v = JSON.parse(localStorage.getItem('homeLayout'));
+    if (Array.isArray(v) && v.length === 3 && v.every(Array.isArray)) return v;
+  } catch (e) { /* 기본 배치 */ }
+  return null;
+}
+function saveHomeLayout(layout) {
+  try { layout ? localStorage.setItem('homeLayout', JSON.stringify(layout)) : localStorage.removeItem('homeLayout'); } catch (e) { /* 무시 */ }
+}
+function homeColumns(cards) {
+  const layout = (homeLayout() || HOME_LAYOUT_DEFAULT).map(col => col.filter(k => k in cards));
+  const placed = new Set(layout.flat());
+  HOME_LAYOUT_DEFAULT.forEach((col, i) => col.forEach(k => { if (!placed.has(k) && k in cards) layout[i].push(k); }));
+  return layout.map((col, i) => `<div class="stack home-col ${i === 2 ? 'hg-side' : ''}" data-col="${i}">${col.map(k => cards[k]
+    ? `<div class="home-card" data-card="${k}"><button type="button" class="card-grip" title="끌어서 옮기기" aria-label="카드 옮기기"></button>${cards[k]}</div>`
+    : `<div class="home-card hidden" data-card="${k}"></div>`).join('')}</div>`).join('');
+}
+/** 카드 위쪽 손잡이를 잡고 끌면 다른 칸·다른 자리로 옮긴다 (마우스·터치 공용) */
+function attachCardDrag(cols) {
+  if (!cols) return;
+  let drag = null;
+  cols.addEventListener('pointerdown', e => {
+    const grip = e.target.closest('.card-grip');
+    if (!grip || e.button !== 0) return;
+    e.preventDefault();
+    drag = { card: grip.closest('.home-card'), x: e.clientX, y: e.clientY, moving: false };
+    grip.setPointerCapture(e.pointerId);
+  });
+  cols.addEventListener('pointermove', e => {
+    if (!drag) return;
+    if (!drag.moving) {
+      if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 5) return;
+      drag.moving = true;
+      drag.card.classList.add('dragging');
+      document.body.classList.add('card-drag-on');
+    }
+    const colEls = [...cols.querySelectorAll('.home-col')];
+    const col = colEls.find(c => { const r = c.getBoundingClientRect(); return e.clientX >= r.left && e.clientX <= r.right; })
+      || colEls.reduce((a, c) => Math.abs(c.getBoundingClientRect().left - e.clientX) < Math.abs(a.getBoundingClientRect().left - e.clientX) ? c : a);
+    const before = [...col.querySelectorAll('.home-card:not(.dragging):not(.hidden)')]
+      .find(c => { const r = c.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });
+    if (before) { if (drag.card.nextElementSibling !== before) col.insertBefore(drag.card, before); }
+    else if (col.lastElementChild !== drag.card) col.appendChild(drag.card);
+  });
+  const end = () => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    if (!d.moving) return;
+    d.card.classList.remove('dragging');
+    document.body.classList.remove('card-drag-on');
+    saveHomeLayout([...cols.querySelectorAll('.home-col')].map(c => [...c.querySelectorAll('.home-card')].map(x => x.dataset.card)));
+    const reset = document.querySelector('[data-act="layout-reset"]');
+    if (reset) reset.classList.remove('hidden');
+  };
+  cols.addEventListener('pointerup', end);
+  cols.addEventListener('pointercancel', end);
 }
 
 /** 이번 주(월~일) 7칸: 일정과 내 마감 할 일. 누르면 그날 달력으로 */
@@ -946,41 +1008,6 @@ function recentWikiPanel() {
     ${pages.length ? pages.map(p => `<div class="recent-page" data-page="${esc(p.id)}"><span>${esc(p.icon || '📄')}</span>
       <span class="t">${esc(p.title || '(제목 없음)')}</span> ${mixedTag(p.spaceId)}<span class="muted small">${timeAgo(p.updatedAt)}</span></div>`).join('')
       : '<div class="empty">아직 페이지가 없습니다</div>'}</section>`;
-}
-
-/** 홈의 "이번 달 가계부": 지금 공간(팀을 보고 있으면 팀) 가계부의 이번 달. 1분 동안은 받아 둔 값을 쓴다 */
-let homeLedgerCache = { key: '', at: 0, data: null };
-async function fillHomeLedger(root) {
-  const box = root.querySelector('#home-ledger');
-  if (!box) return;
-  const sid = viewTeam() || personalId();
-  const won = n => Number(n || 0).toLocaleString('ko-KR') + '원';
-  try {
-    let d = homeLedgerCache.key === sid && Date.now() - homeLedgerCache.at < 60000 ? homeLedgerCache.data : null;
-    if (!d) {
-      const get = m => request('GET', `/api/ledger/spaces/${encodeURIComponent(sid)}?month=${m}`);
-      d = await get(today().slice(0, 7));
-      if (today() > d.to || today() < d.from) { // 월 시작일이 1일이 아니면 오늘이 든 달로
-        const [y, m] = today().slice(0, 7).split('-').map(Number);
-        d = await get(ymd(new Date(y, m - 1 + (today() > d.to ? 1 : -1), 1)).slice(0, 7));
-      }
-      homeLedgerCache = { key: sid, at: Date.now(), data: d };
-    }
-    if (!box.isConnected) return;
-    const s = d.summary;
-    const top = (s.byMajor || []).slice(0, 3);
-    const max = top.length ? top[0].amount : 0;
-    box.querySelector('.empty, .hl-body') && box.querySelectorAll('.empty, .hl-body').forEach(x => x.remove());
-    box.insertAdjacentHTML('beforeend', `<div class="hl-body">
-      <div class="hl-sum"><div><span class="muted small">지출</span><b>${won(s.expense)}</b></div>
-        <div><span class="muted small">수입</span><b class="in">${won(s.income)}</b></div>
-        <div><span class="muted small">저축</span><b class="sv">${won(s.saving)}</b></div></div>
-      ${top.map(r => `<div class="rank-row"><div class="rank-label"><span>${esc(r.major)}</span><span>${won(r.amount)}</span></div>
-        <div class="bar"><i style="width:${max ? r.amount / max * 100 : 0}%"></i></div></div>`).join('') || '<div class="muted small">이번 달 지출 기록이 없습니다</div>'}
-    </div>`);
-  } catch (e) {
-    if (box.isConnected) box.querySelectorAll('.empty').forEach(x => { x.textContent = '가계부를 불러오지 못했습니다'; });
-  }
 }
 
 const ACTION = { create: '추가', update: '수정', delete: '삭제', movein: '가져옴', moveout: '다른 공간으로 옮김' };
