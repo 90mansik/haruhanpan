@@ -909,4 +909,4 @@ body.nav-mini .sn-badge.alert { position: absolute; top: 2px; right: 4px; min-wi
   .user-row { flex-wrap: wrap; }
   .perms { width: 100%; padding-left: 42px; }
 }
-
+.dlg-acts button { user-select: none; } /* 빠르게 눌러도 버튼 글자가 선택되지 않게 */
