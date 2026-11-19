@@ -6,6 +6,11 @@ spring:
     default: dev
   flyway:
     locations: classpath:db/migration
+  # 하루위키 이미지 업로드 (WikiFiles.MAX_BYTES 와 맞춤. Caddy 의 request_body 는 20MB)
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 11MB
   threads:
     virtual:
       enabled: true

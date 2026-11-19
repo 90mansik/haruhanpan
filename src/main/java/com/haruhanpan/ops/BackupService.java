@@ -6,6 +6,7 @@ import com.haruhanpan.data.ActivityRepository;
 import com.haruhanpan.data.DashboardService;
 import com.haruhanpan.ledger.LedgerService;
 import com.haruhanpan.space.SpaceRepository;
+import com.haruhanpan.wiki.WikiFiles;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -52,11 +53,13 @@ public class BackupService {
 
 	private final AccountService accounts;
 	private final LedgerService ledger;
+	private final WikiFiles wikiFiles;
 
 	public BackupService(DashboardService dashboard, SpaceRepository spaces, ActivityRepository activity,
-			AccountService accounts, LedgerService ledger, JsonMapper json, HaruProperties props) {
+			AccountService accounts, LedgerService ledger, WikiFiles wikiFiles, JsonMapper json, HaruProperties props) {
 		this.accounts = accounts;
 		this.ledger = ledger;
+		this.wikiFiles = wikiFiles;
 		this.dashboard = dashboard;
 		this.spaces = spaces;
 		this.activity = activity;
@@ -92,6 +95,10 @@ public class BackupService {
 			deleteOld();
 			activity.deleteOlderThan(Instant.now().minus(java.time.Duration.ofDays(90)));
 			accounts.purgeStalePending();
+			int purged = wikiFiles.purgeUnreferenced();
+			if (purged > 0) {
+				log.info("쓰지 않는 위키 이미지 {}개 정리", purged);
+			}
 		} catch (RuntimeException e) {
 			log.error("일일 백업 실패: {}", e.getMessage());
 		}

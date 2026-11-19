@@ -20,34 +20,52 @@
 <script src="/theme.js"></script>
 </head>
 <body>
-<header class="topbar">
-  <div class="topbar-inner">
-    <a class="brand" href="/" title="홈으로">하루<span>한판</span></a>
+<div class="app-shell">
+  <!-- 왼쪽 사이드바: 공간 선택 · 메뉴(숫자 배지) · 공간 설정 · 접기. 휴대폰에서는 "더보기"로 여는 서랍 -->
+  <aside class="sidenav" id="sidenav" aria-label="하루한판 메뉴">
+    <div class="sn-head">
+      <a class="brand" href="/" title="홈 (앱 고르기)">하루<span>한판</span></a>
+      <button class="icon sn-collapse" id="btn-collapse" title="사이드바 접기" aria-label="사이드바 접기">«</button>
+    </div>
     <div class="space-pick">
-      <select id="space-sel" aria-label="보기 범위"></select>
-      <select id="target-sel" class="hidden" aria-label="새 항목 저장 위치" title="새로 추가하는 항목이 저장될 공간"></select>
-      <button class="icon" id="btn-space" title="공간 설정 · 멤버 · 초대" aria-label="공간 설정">⚙</button>
+      <select id="space-sel" aria-label="보기 공간"></select>
+      <label class="with-mine hidden" id="with-mine" title="팀 공간과 내 공간을 한 화면에 같이 봅니다. 새로 만드는 항목은 팀에 저장됩니다"><input type="checkbox" id="with-mine-cb"><span>내 공간도 같이</span></label>
     </div>
-    <nav class="tabs" id="tabs"></nav>
-    <div class="tools">
-      <span class="save-state" id="save-state"></span>
-      <button class="small hidden" id="btn-pending" title="Google 가입 신청 승인">승인 대기</button>
-      <a class="btn ghost small" href="/" title="홈 (앱 고르기)">🏠<span class="label-text"> 홈</span></a>
-      <button class="ghost small" id="btn-ledger" title="같은 공간의 하루가계부로">💰<span class="label-text"> 하루가계부</span></button>
-      <button class="ghost small" id="btn-export" data-m="내보내기 (JSON)" title="지금 공간의 데이터를 JSON 파일로 저장">내보내기</button>
-      <button class="ghost small" id="btn-import" data-m="가져오기 (JSON)" title="JSON 파일로 지금 공간을 전체 교체 (관리자)">가져오기</button>
-      <input type="file" id="import-file" accept="application/json,.json" class="hidden">
-      <button class="icon" id="btn-theme" data-m="라이트/다크 전환" title="라이트/다크 전환" aria-label="테마 전환">◐</button>
-      <button class="ghost small" id="btn-account" data-m="내 계정" data-m-text title="내 계정"></button>
-      <button class="ghost small" id="btn-logout" data-m="로그아웃">로그아웃</button>
+    <nav class="sn-nav" id="tabs"></nav>
+    <div class="sn-foot">
+      <button class="sn-item" id="btn-space" title="공간 설정 · 멤버 · 초대"><span class="sn-ic">⚙</span><span class="sn-label">공간 설정 · 초대</span></button>
     </div>
+  </aside>
+  <div class="sn-scrim" id="sn-scrim"></div>
+  <div class="app-body">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <button class="sn-cur" id="btn-nav" title="공간·메뉴 열기"><span class="sn-cur-dot" id="cur-dot"></span><span id="cur-space"></span><span class="muted">▾</span></button>
+        <h1 class="page-title" id="page-title"></h1>
+        <div class="tools">
+          <span class="save-state" id="save-state"></span>
+          <button class="small hidden" id="btn-pending" title="Google 가입 신청 승인">승인 대기</button>
+          <a class="btn ghost small" href="/" title="홈 (앱 고르기)">🏠<span class="label-text"> 홈</span></a>
+          <button class="ghost small" id="btn-ledger" title="같은 공간의 하루가계부로">💰<span class="label-text"> 하루가계부</span></button>
+          <button class="ghost small" id="btn-export" data-m="내보내기 (JSON)" title="지금 공간의 데이터를 JSON 파일로 저장">내보내기</button>
+          <button class="ghost small" id="btn-import" data-m="가져오기 (JSON)" title="JSON 파일로 지금 공간을 전체 교체 (관리자)">가져오기</button>
+          <input type="file" id="import-file" accept="application/json,.json" class="hidden">
+          <button class="icon" id="btn-theme" data-m="라이트/다크 전환" title="라이트/다크 전환" aria-label="테마 전환">◐</button>
+          <button class="ghost small" id="btn-account" data-m="내 계정" data-m-text title="내 계정"></button>
+          <button class="ghost small" id="btn-logout" data-m="로그아웃">로그아웃</button>
+        </div>
+      </div>
+    </header>
+    <main id="main"><div class="empty">불러오는 중…</div></main>
   </div>
-</header>
-<main id="main"><div class="empty">불러오는 중…</div></main>
+</div>
+<!-- 휴대폰: 아래쪽 탭 바 -->
+<nav class="bottombar" id="bottombar" aria-label="주요 메뉴"></nav>
 <dialog id="dlg"></dialog>
 <script src="/vendor/highlight/highlight.min.js"></script>
 <script src="/vendor/highlight/dockerfile.min.js"></script>
 <script src="/vendor/highlight/powershell.min.js"></script>
+<script src="/wiki.js"></script>
 <script src="/app.js"></script>
 <script src="/menu.js"></script>
 </body>

@@ -4,7 +4,7 @@
  * 공간: 모든 항목에 spaceId 가 있다.
  *   UI.view  보기 범위 — 'p'(내 공간) / 't:팀id'(팀만) / 'pt:팀id'(내 공간 + 팀 하나). 홈 포함 모든 탭이 따른다
  *   UI.space 새 항목을 저장할 공간 — 같이 볼 때는 기본이 내 공간, 상단 "저장 위치"에서 바꾼다
- * 탭: #home #todo #board #calendar #routine #notes #snippets
+ * 탭: #home #todo #board #calendar #routine #wiki(하루위키, 예전 #notes) #snippets
  */
 
 // ───────── 상태 ─────────
@@ -110,12 +110,18 @@ function spaceTag(sid) {
   return `<span class="space-tag" style="--c:${esc(s.color || COLORS[1])}">${esc(s.name)}</span>`;
 }
 const readonlyNote = () => canEdit() ? '' : '<span class="badge lang">보기 전용</span>';
-/** 같이 볼 때 항목이 어느 공간 것인지 (팀 항목에만 표시) */
-const mixedTag = sid => isMixed() ? spaceTag(sid) : '';
-/** 같이 볼 때 입력칸 옆에: 새 항목이 저장될 공간 */
-const targetHint = () => isMixed()
-  ? `<span class="save-to" style="--c:${esc(curSpace().color || COLORS[0])}" title="상단 '저장' 선택에서 바꿀 수 있습니다">→ ${esc(spaceLabel(curSpace()))}</span>`
-  : '';
+/**
+ * 팀과 내 공간을 같이 볼 때: 새 항목은 팀에 저장하고(팀을 고르고 들어왔으니), 내 공간 항목에만 "👤 내 공간" 표시를 붙여 구분한다
+ */
+const MINE_TAG = '<span class="space-tag mine" title="내 공간 항목">👤 내 공간</span>';
+const mixedTag = sid => isMixed() && !isTeam(sid) ? MINE_TAG : '';
+/** 새 항목을 저장할 공간: 팀을 보고 있으면 팀 (팀에서 보기 권한뿐이면 내 공간), 아니면 내 공간 */
+function defaultSpace(view = UI.view) {
+  const team = view.includes(':') ? view.split(':')[1] : null;
+  return team && spaceById(team) && canEdit(team) ? team : personalId();
+}
+/** (예전 "저장 위치" 안내 자리. 이제 저장 위치는 고르지 않는다) */
+const targetHint = () => '';
 
 // ───────── 서버 통신 ─────────
 function csrfToken() {
@@ -257,14 +263,14 @@ function applyData(data) {
   }
   const team = UI.view.split(':')[1];
   if (UI.view !== 'p' && !spaceById(team)) UI.view = 'p';
-  if (!inView(UI.space)) UI.space = viewSpaces()[0];
+  if (!inView(UI.space)) UI.space = defaultSpace();
 }
 
 /** 보기 범위를 바꾼다. 저장 위치는 팀만 볼 땐 팀, 그 외엔 내 공간 */
 function setView(view) {
   UI.view = view;
   try { localStorage.setItem('view', view); } catch (e) { /* 무시 */ }
-  UI.space = view.startsWith('t:') ? view.slice(2) : personalId();
+  UI.space = defaultSpace(view);
   UI.todoTag = ''; UI.todoAssignee = ''; UI.boardTag = ''; UI.boardAssignee = '';
   UI.noteId = null; UI.snipTag = ''; UI.logScroll = null;
   render();
@@ -317,7 +323,7 @@ async function loadAll() {
 /** 다른 사람의 변경을 받아온다. 입력 중이거나 저장 대기 중이면 건너뛴다 (force 면 그래도 불러옴) */
 async function reload(force = false) {
   const typing = document.activeElement && document.activeElement.closest('#main, #dlg')
-    && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+    && (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) || document.activeElement.isContentEditable); // 위키 편집기는 contenteditable
   // 드래그로 골라 둔 글자가 있으면 다시 그리면서 지우지 않는다 (스니펫 부분 복사 등)
   const sel = getSelection();
   const selecting = sel && !sel.isCollapsed && sel.anchorNode && $('#main').contains(sel.anchorNode);
@@ -438,7 +444,7 @@ function todoRow(t, { showSpace = false } = {}) {
     <span class="pri ${esc(t.priority)}" title="우선순위 ${PRI[t.priority] || '-'}"></span>
     <div class="main" data-act="edit">
       <div class="title">${esc(t.title)} ${t.status === 'doing' ? '<span class="badge doing">진행중</span>' : ''}</div>
-      <div class="meta">${showSpace ? spaceTag(t.spaceId) : ''}${t.tag ? `<span class="tag">${esc(t.tag)}</span>` : ''}${dueLabel(t)}${repeatLabel(t)}${t.memo ? '<span class="muted small">📝</span>' : ''}</div>
+      <div class="meta">${showSpace ? mixedTag(t.spaceId) : ''}${t.tag ? `<span class="tag">${esc(t.tag)}</span>` : ''}${dueLabel(t)}${repeatLabel(t)}${t.memo ? '<span class="muted small">📝</span>' : ''}</div>
     </div>
     ${isTeam(t.spaceId) ? avatar(t.assignee) : ''}
     ${editable ? `<div class="acts">
@@ -670,37 +676,71 @@ function openForm({ title, fields, values = {}, onSubmit, onDelete, submitLabel 
 const TABS = [
   ['home', '홈', renderHome], ['todo', '할 일', renderTodo], ['board', '보드', renderBoard],
   ['calendar', '달력', renderCalendar], ['routine', '루틴', renderRoutine],
-  ['notes', '메모', renderNotes], ['snippets', '스니펫', renderSnippets],
+  ['wiki', '위키', root => renderWiki(root)], ['snippets', '스니펫', renderSnippets],
 ];
 const currentTab = () => {
-  const h = location.hash.slice(1);
+  const h = location.hash.slice(1) === 'notes' ? 'wiki' : location.hash.slice(1); // 예전 메모 주소
   return TABS.some(t => t[0] === h) ? h : 'home';
 };
 
+// 메뉴 아이콘 (선 아이콘, 글자색을 따른다)
+const NAV_ICON = {
+  home: '<path d="M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  todo: '<rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="m8 12 3 3 5-6"/>',
+  board: '<rect x="3.5" y="4" width="5" height="16" rx="1.5"/><rect x="9.5" y="4" width="5" height="11" rx="1.5"/><rect x="15.5" y="4" width="5" height="7" rx="1.5"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  routine: '<path d="M4 12a8 8 0 0 1 13.7-5.6M20 12a8 8 0 0 1-13.7 5.6"/><path d="M18 3v4h-4M6 21v-4h4"/>',
+  wiki: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20v3H6.5"/>',
+  snippets: '<path d="m9 8-5 4 5 4M15 8l5 4-5 4"/>',
+};
+const navIcon = k => `<svg class="sn-svg" viewBox="0 0 24 24" aria-hidden="true">${NAV_ICON[k] || ''}</svg>`;
+
+/** 메뉴 옆 숫자: 할 일(지남+오늘 마감, 지난 게 있으면 빨강) · 달력(오늘 일정) · 루틴(오늘 한 수/전체) */
+function navBadges() {
+  const t0 = today();
+  const mine = inCur(S.todos).filter(t => !t.done && isMine(t));
+  const over = mine.filter(isOver).length;
+  const due = over + mine.filter(isToday).length;
+  const evToday = inCur(S.events).filter(e => occursOn(e, t0)).length;
+  const routines = inCur(S.routines);
+  const done = routines.filter(r => iChecked(t0, r.id)).length;
+  return {
+    todo: due ? `<span class="sn-badge ${over ? 'alert' : ''}" title="지남 ${over} · 오늘 마감 ${due - over}">${due}</span>` : '',
+    calendar: evToday ? `<span class="sn-badge" title="오늘 일정">${evToday}</span>` : '',
+    routine: routines.length ? `<span class="sn-badge ${done === routines.length ? 'ok' : ''}" title="오늘 루틴">${done}/${routines.length}</span>` : '',
+  };
+}
+
+const MOBILE_TABS = ['home', 'todo', 'calendar', 'wiki'];
+
 function renderTopbar() {
   const tab = currentTab();
+  const badges = navBadges();
   $('#tabs').innerHTML = TABS.map(([k, label]) =>
-    `<a href="#${k}" class="${k === tab ? 'on' : ''}">${label}</a>`).join('');
-  // 보기 범위: 내 공간 / 팀마다 "팀만", "내 공간 + 팀"
+    `<a href="#${k}" class="sn-item ${k === tab ? 'on' : ''}" title="${label}"><span class="sn-ic">${navIcon(k)}</span><span class="sn-label">${label}</span>${badges[k] || ''}</a>`).join('');
+  $('#bottombar').innerHTML = MOBILE_TABS.map(k => { const t = TABS.find(x => x[0] === k);
+    return `<a href="#${k}" class="${k === tab ? 'on' : ''}">${navIcon(k)}<span>${t[1]}</span>${badges[k] ? '<i class="dot"></i>' : ''}</a>`; }).join('')
+    + `<button type="button" id="bb-more" class="${MOBILE_TABS.includes(tab) ? '' : 'on'}"><svg class="sn-svg" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg><span>더보기</span></button>`;
+  // 위쪽 바 제목에도 메뉴와 같은 아이콘을 붙인다
+  $('#page-title').innerHTML = `<span class="pt-ic">${navIcon(tab)}</span>${esc((TABS.find(t => t[0] === tab) || [])[1] || '')}`;
+  // 보기 공간: 내 공간 / 팀 하나. 팀을 고르면 옆의 "내 공간도 같이" 체크로 내 공간 + 팀을 같이 본다
   const sel = $('#space-sel');
   const personal = spaceById(personalId());
   const teams = S.spaces.filter(s => s.kind === 'team');
-  const opt = (v, label) => `<option value="${esc(v)}" ${UI.view === v ? 'selected' : ''}>${esc(label)}</option>`;
-  sel.innerHTML = opt('p', '👤 ' + personal.name)
-    + teams.map(t => `<optgroup label="${esc(t.name)}">${opt('t:' + t.id, '👥 ' + t.name)}${opt('pt:' + t.id, `🔀 ${personal.name} + ${t.name}`)}</optgroup>`).join('')
-    + '<option value="__new">＋ 새 팀 공간…</option>';
   const vt = viewTeam();
+  const pick = vt ? 't:' + vt : 'p';
+  const opt = (v, label) => `<option value="${esc(v)}" ${pick === v ? 'selected' : ''}>${esc(label)}</option>`;
+  sel.innerHTML = opt('p', '👤 ' + personal.name) + teams.map(t => opt('t:' + t.id, '👥 ' + t.name)).join('')
+    + '<option value="__new">＋ 새 팀 공간…</option>';
   sel.style.setProperty('--c', (vt ? spaceById(vt) : personal).color || COLORS[0]);
-  sel.title = '보기 범위 — 홈과 모든 탭이 이 범위를 보여줍니다';
+  sel.title = '보기 공간 — 홈과 모든 메뉴가 이 공간을 보여줍니다';
+  // 휴대폰 상단: 지금 공간 (누르면 서랍)
+  const curSp = vt ? spaceById(vt) : personal;
+  $('#cur-space').textContent = (vt ? '👥 ' : '👤 ') + curSp.name + (isMixed() ? ' + 내 공간' : '');
+  $('#cur-dot').style.background = curSp.color || COLORS[0];
+  $('#with-mine').classList.toggle('hidden', !vt);
+  $('#with-mine-cb').checked = isMixed();
 
-  // 같이 볼 때만: 새 항목 저장 위치
-  const tgt = $('#target-sel');
-  tgt.classList.toggle('hidden', !isMixed());
-  if (isMixed()) {
-    tgt.innerHTML = viewSpaces().map(id => spaceById(id))
-      .map(s => `<option value="${esc(s.id)}" ${s.id === UI.space ? 'selected' : ''} ${s.role === 'viewer' ? 'disabled' : ''}>저장: ${esc(spaceLabel(s))}</option>`).join('');
-    tgt.style.setProperty('--c', curSpace().color || COLORS[0]);
-  }
   $('#btn-account').textContent = S.me.name || S.me.login;
   const pendingCount = (S.pendingUsers || []).length;
   const pb = $('#btn-pending');
@@ -710,8 +750,9 @@ function renderTopbar() {
 
 /** Google 로 직접 가입해 승인을 기다리는 사람에게 보이는 화면 */
 function renderPendingScreen() {
-  $('.space-pick').classList.add('hidden');
-  $('#tabs').innerHTML = '';
+  $('#sidenav').classList.add('hidden');
+  $('#bottombar').classList.add('hidden');
+  $('#btn-nav').classList.add('hidden');
   $$('.tools > :not(#btn-theme):not(#btn-logout):not(.menu-btn)').forEach(el => el.classList.add('hidden'));
   $('#main').innerHTML = `<div class="login-wrap" style="min-height:60vh">
     <section class="panel login" style="text-align:center">
@@ -774,8 +815,7 @@ function render() {
   const fresh = main.cloneNode(false); // 이전 화면의 이벤트 리스너를 버리기 위해 새 요소로 교체
   main.replaceWith(fresh);
   TABS.find(t => t[0] === tab)[2](fresh);
-  const active = $('#tabs a.on');
-  if (active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  document.body.classList.remove('nav-open'); // 메뉴를 고르면 휴대폰 서랍은 닫는다
 }
 
 /** 이 공간(팀)을 보도록 범위를 바꾼다. 이미 보이면 그대로 */
@@ -825,18 +865,25 @@ function renderHome(root) {
     <div class="panel stat link" data-go="board"><div class="label">미완료 · 진행중 → 보드</div><div class="value">${open.length} <small>· ${doing.length}</small></div></div>
     <div class="panel stat link" data-go="routine"><div class="label">오늘 루틴</div><div class="value">${routinesDone}<small> / ${todayRoutines.length}</small></div><div class="bar"><i style="width:${pct}%"></i></div></div>
   </div>
-  <div class="home-grid">
+  ${weekStrip()}
+  <div class="home-grid3">
     <div class="stack">
       <section class="panel"><div class="panel-head"><h2>집중할 일</h2><span class="grow"></span>${canEdit() ? '<button class="ghost small" data-act="add-todo">+ 추가</button>' : ''}</div>
         <div id="focus">${focus.length ? focus.map(t => todoRow(t, { showSpace: isMixed() })).join('') : '<div class="empty">급한 일이 없어요 👍</div>'}</div></section>
       ${teams.map(teamPanel).join('')}
+      ${recentWikiPanel()}
+    </div>
+    <div class="stack">
       <section class="panel"><h2>앞으로 14일 일정</h2>
         ${days.length ? days.map(([day, evs]) => `<div class="day-group">
           <div class="d ${day === t0 ? 'today' : ''}">${fmtDate(day)}${day === t0 ? ' · 오늘' : ''}${S.holidays[day] ? ` <span style="color:var(--sun)">${esc(S.holidays[day])}</span>` : ''}</div>
           ${evs.map(e => `<div class="ev-line" data-ev="${esc(e.id)}" style="cursor:pointer"><span class="ev-dot" style="background:${esc(e.color || COLORS[0])}"></span>${e.time ? `<span class="muted small">${esc(e.time)}</span>` : ''}${esc(e.title)} ${mixedTag(e.spaceId)}</div>`).join('')}
         </div>`).join('') : '<div class="empty">예정된 일정이 없습니다</div>'}</section>
+      <section class="panel"><h2>D-Day</h2>
+        ${ddays.length ? ddays.map(([e, n]) => `<div class="dday-row" data-ev="${esc(e.id)}" style="cursor:pointer"><span>${esc(e.title)} ${mixedTag(e.spaceId)}</span><b>${n === 0 ? 'D-Day' : n > 0 ? 'D-' + n : 'D+' + -n}</b></div>`).join('')
+          : '<div class="empty">일정에서 "D-Day 로 표시"를 켜세요</div>'}</section>
     </div>
-    <div class="stack">
+    <div class="stack hg-side">
       <section class="panel"><h2>오늘 루틴</h2>
         ${routineGroups.length ? routineGroups.map(([s, rs]) => `
           ${routineGroups.length > 1 ? `<div class="group-label">${esc(s.name)}</div>` : ''}
@@ -844,12 +891,10 @@ function renderHome(root) {
             const c = iChecked(t0, r.id);
             return `<label class="routine-item ${c ? 'checked' : ''}"><input type="checkbox" data-rid="${esc(r.id)}" ${c ? 'checked' : ''}><span class="grow">${esc(r.title)}</span></label>`;
           }).join('')}`).join('') : '<div class="empty">루틴 탭에서 추가하세요</div>'}</section>
-      <section class="panel"><h2>D-Day</h2>
-        ${ddays.length ? ddays.map(([e, n]) => `<div class="dday-row" data-ev="${esc(e.id)}" style="cursor:pointer"><span>${esc(e.title)} ${mixedTag(e.spaceId)}</span><b>${n === 0 ? 'D-Day' : n > 0 ? 'D-' + n : 'D+' + -n}</b></div>`).join('')
-          : '<div class="empty">일정에서 "D-Day 로 표시"를 켜세요</div>'}</section>
-      <section class="panel"><h2>고정 메모</h2>
-        ${pinned.length ? pinned.map(n => `<div class="note-card" data-note="${esc(n.id)}"><b>${esc(n.title || '(제목 없음)')}</b> ${mixedTag(n.spaceId)}<div class="body">${esc((n.body || '').slice(0, 200))}</div></div>`).join('')
-          : '<div class="empty">메모에서 📌 고정하면 여기에 보여요</div>'}</section>
+      <section class="panel" id="home-ledger"><div class="panel-head"><h2>이번 달 가계부</h2><span class="grow"></span><a class="small" href="/ledger" data-ledger>하루가계부 →</a></div><div class="empty small">불러오는 중…</div></section>
+      <section class="panel"><h2>고정 페이지</h2>
+        ${pinned.length ? pinned.map(n => `<div class="note-card" data-note="${esc(n.id)}"><b>${esc(n.icon || '📄')} ${esc(n.title || '(제목 없음)')}</b> ${mixedTag(n.spaceId)}<div class="body">${esc((n.body || '').slice(0, 200))}</div></div>`).join('')
+          : '<div class="empty">하루위키에서 📌 홈에 고정하면 여기에 보여요</div>'}</section>
     </div>
   </div>`;
 
@@ -864,13 +909,82 @@ function renderHome(root) {
   on(root, 'click', '[data-note]', el => {
     const n = byId(S.notes, el.dataset.note);
     UI.noteId = n.id;
-    location.hash = 'notes';
+    location.hash = 'wiki';
   });
   on(root, 'change', '[data-rid]', el => { setRoutineCheck(byId(S.routines, el.dataset.rid), t0, el.checked); render(); });
+  on(root, 'click', '[data-wday]', el => { UI.calSel = el.dataset.wday; UI.calMonth = el.dataset.wday.slice(0, 7); location.hash = 'calendar'; });
+  on(root, 'click', '[data-page]', el => { UI.noteId = el.dataset.page; location.hash = 'wiki'; });
+  on(root, 'click', '[data-ledger]', (el, e) => { e.preventDefault(); location.href = '/ledger?space=' + encodeURIComponent(viewTeam() || personalId()); });
+  fillHomeLedger(root);
+}
+
+/** 이번 주(월~일) 7칸: 일정과 내 마감 할 일. 누르면 그날 달력으로 */
+function weekStrip() {
+  const t0 = today();
+  const dow = (parse(t0).getDay() + 6) % 7; // 월=0
+  const start = addDays(t0, -dow);
+  const mine = inCur(S.todos).filter(t => !t.done && isMine(t));
+  const cells = Array.from({ length: 7 }, (_, i) => {
+    const day = addDays(start, i);
+    const evs = eventsOn(day);
+    const tds = mine.filter(t => t.due === day);
+    const hol = S.holidays[day];
+    const items = [...evs.map(e => `<div class="wk-ev" style="--c:${esc(e.color || COLORS[0])}">${e.time ? `<span>${esc(e.time)}</span> ` : ''}${esc(e.title)}</div>`),
+      ...tds.map(t => `<div class="wk-td ${day < t0 ? 'over' : ''}">☐ ${esc(t.title)}</div>`)];
+    return `<button type="button" class="wk-day ${day === t0 ? 'today' : ''} ${day < t0 ? 'past' : ''}" data-wday="${day}">
+      <div class="wk-d"><b>${WD[parse(day).getDay()]}</b> ${parse(day).getDate()}${hol ? ` <span class="hol">${esc(hol)}</span>` : ''}</div>
+      ${items.slice(0, 3).join('')}${items.length > 3 ? `<div class="muted small">+${items.length - 3}</div>` : ''}
+    </button>`;
+  }).join('');
+  return `<section class="panel week-strip"><div class="panel-head"><h2>이번 주</h2><span class="grow"></span>
+    <span class="muted small">${fmtDate(start)} ~ ${fmtDate(addDays(start, 6))}</span></div><div class="wk-days">${cells}</div></section>`;
+}
+
+function recentWikiPanel() {
+  const pages = inCur(S.notes).filter(n => n.updatedAt).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 5);
+  return `<section class="panel"><div class="panel-head"><h2>최근 위키</h2><span class="grow"></span><a class="small" href="#wiki">위키 →</a></div>
+    ${pages.length ? pages.map(p => `<div class="recent-page" data-page="${esc(p.id)}"><span>${esc(p.icon || '📄')}</span>
+      <span class="t">${esc(p.title || '(제목 없음)')}</span> ${mixedTag(p.spaceId)}<span class="muted small">${timeAgo(p.updatedAt)}</span></div>`).join('')
+      : '<div class="empty">아직 페이지가 없습니다</div>'}</section>`;
+}
+
+/** 홈의 "이번 달 가계부": 지금 공간(팀을 보고 있으면 팀) 가계부의 이번 달. 1분 동안은 받아 둔 값을 쓴다 */
+let homeLedgerCache = { key: '', at: 0, data: null };
+async function fillHomeLedger(root) {
+  const box = root.querySelector('#home-ledger');
+  if (!box) return;
+  const sid = viewTeam() || personalId();
+  const won = n => Number(n || 0).toLocaleString('ko-KR') + '원';
+  try {
+    let d = homeLedgerCache.key === sid && Date.now() - homeLedgerCache.at < 60000 ? homeLedgerCache.data : null;
+    if (!d) {
+      const get = m => request('GET', `/api/ledger/spaces/${encodeURIComponent(sid)}?month=${m}`);
+      d = await get(today().slice(0, 7));
+      if (today() > d.to || today() < d.from) { // 월 시작일이 1일이 아니면 오늘이 든 달로
+        const [y, m] = today().slice(0, 7).split('-').map(Number);
+        d = await get(ymd(new Date(y, m - 1 + (today() > d.to ? 1 : -1), 1)).slice(0, 7));
+      }
+      homeLedgerCache = { key: sid, at: Date.now(), data: d };
+    }
+    if (!box.isConnected) return;
+    const s = d.summary;
+    const top = (s.byMajor || []).slice(0, 3);
+    const max = top.length ? top[0].amount : 0;
+    box.querySelector('.empty, .hl-body') && box.querySelectorAll('.empty, .hl-body').forEach(x => x.remove());
+    box.insertAdjacentHTML('beforeend', `<div class="hl-body">
+      <div class="hl-sum"><div><span class="muted small">지출</span><b>${won(s.expense)}</b></div>
+        <div><span class="muted small">수입</span><b class="in">${won(s.income)}</b></div>
+        <div><span class="muted small">저축</span><b class="sv">${won(s.saving)}</b></div></div>
+      ${top.map(r => `<div class="rank-row"><div class="rank-label"><span>${esc(r.major)}</span><span>${won(r.amount)}</span></div>
+        <div class="bar"><i style="width:${max ? r.amount / max * 100 : 0}%"></i></div></div>`).join('') || '<div class="muted small">이번 달 지출 기록이 없습니다</div>'}
+    </div>`);
+  } catch (e) {
+    if (box.isConnected) box.querySelectorAll('.empty').forEach(x => { x.textContent = '가계부를 불러오지 못했습니다'; });
+  }
 }
 
 const ACTION = { create: '추가', update: '수정', delete: '삭제', movein: '가져옴', moveout: '다른 공간으로 옮김' };
-const COLL = { todos: '할 일', events: '일정', notes: '메모', snippets: '스니펫', routines: '루틴' };
+const COLL = { todos: '할 일', events: '일정', notes: '위키', snippets: '스니펫', routines: '루틴' };
 
 /** 팀 대시보드: 멤버별 진행 상황 + 이번 주 마감 + 최근 활동 */
 function teamPanel(s) {
@@ -992,7 +1106,7 @@ function renderBoard(root) {
   </div>
   <div class="board">${BOARD_COLS.map(([st, label, color]) => {
     const list = cards(st);
-    const addLabel = isMixed() ? `+ 빠른 추가 → ${curSpace().name}` : '+ 빠른 추가 (Enter)';
+    const addLabel = '+ 빠른 추가 (Enter)';
     return `<div class="col" data-col="${st}">
       <div class="col-head"><span class="dot" style="background:${color}"></span>${label} <span class="n">${list.length}</span></div>
       ${editable ? `<input type="text" placeholder="${esc(addLabel)}" data-add="${st}" autocomplete="off">` : ''}
@@ -1096,7 +1210,7 @@ function renderCalendar(root) {
     const tds = todoList.filter(t => t.due === d && !t.done);
     const hol = holidayOn(d);
     const items = [
-      ...evs.map(e => `<div class="ev ${isMixed() && isTeam(e.spaceId) ? 'team-ev' : ''}" style="background:${esc(e.color || COLORS[0])}" title="${esc(spaceById(e.spaceId).name)}">${isMixed() && isTeam(e.spaceId) ? '👥' : ''}${e.time ? esc(e.time) + ' ' : ''}${esc(e.title)}</div>`),
+      ...evs.map(e => `<div class="ev ${isMixed() && !isTeam(e.spaceId) ? 'mine-ev' : ''}" style="background:${esc(e.color || COLORS[0])}" title="${esc(spaceById(e.spaceId).name)}">${isMixed() && !isTeam(e.spaceId) ? '👤' : ''}${e.time ? esc(e.time) + ' ' : ''}${esc(e.title)}</div>`),
       ...tds.map(t => `<div class="td ${d < t0 ? 'over' : ''}">☐ ${esc(t.title)}</div>`),
     ];
     const max = 3;
@@ -1121,7 +1235,7 @@ function renderCalendar(root) {
         <h2>${y}년 ${m}월</h2>
         <button class="ghost small" data-nav="1" aria-label="다음 달">▶</button>
         <button class="ghost small" data-nav="0">오늘</button>
-        ${isMixed() ? '<span class="grow" style="flex:1"></span><span class="muted small">👥 = 팀 일정</span>' : ''}
+        ${isMixed() ? '<span class="grow" style="flex:1"></span><span class="muted small">👤 = 내 공간 일정</span>' : ''}
       </div>
       <div class="cal">${WD.map((w, i) => `<div class="wd ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</div>`).join('')}${cells.join('')}</div>
     </section>
@@ -1235,7 +1349,7 @@ function renderRoutine(root) {
         const cls = [d === t0 ? 'today' : '', dt.getDay() === 0 || holidayOn(d) ? 'sun' : '', dt.getDay() === 6 ? 'sat' : ''].join(' ');
         return `<th class="d ${cls}" title="${esc(holidayOn(d) || '')}">${dt.getMonth() + 1}/${dt.getDate()}<small>${WD[dt.getDay()]}</small></th>`;
       }).join('')}</tr></thead>
-      <tbody>${list.map(r => `<tr><th class="r" title="${esc(r.title)}">${isMixed() && isTeam(r.spaceId) ? '👥 ' : ''}${esc(r.title)}</th>${days.map(d => cell(r, d)).join('')}</tr>`).join('')}</tbody>
+      <tbody>${list.map(r => `<tr><th class="r" title="${esc(r.title)}">${isMixed() && !isTeam(r.spaceId) ? '👤 ' : ''}${esc(r.title)}</th>${days.map(d => cell(r, d)).join('')}</tr>`).join('')}</tbody>
       <tfoot><tr><th class="r">내 달성</th>${days.map(d => {
         const cnt = list.filter(r => iChecked(d, r.id)).length;
         return `<td class="cnt ${d === t0 ? 'today' : ''} ${cnt === list.length ? 'full' : ''}">${cnt}/${list.length}</td>`;
@@ -1294,114 +1408,10 @@ function renderRoutine(root) {
   });
 }
 
-// ───────── 메모 ─────────
-let noteTimer = null;
+// ───────── 하루위키 (화면은 wiki.js) ─────────
+let noteTimer = null; // 위키 자동 저장 대기 (wiki.js 가 쓴다)
 
-function renderNotes(root) {
-  const q = UI.noteQuery.trim().toLowerCase();
-  const list = inCur(S.notes)
-    .filter(n => !q || (n.title + ' ' + n.body).toLowerCase().includes(q))
-    .sort((a, b) => (b.pinned - a.pinned) || (b.updatedAt || '').localeCompare(a.updatedAt || ''));
-  if (!list.some(n => n.id === UI.noteId)) UI.noteId = list.length ? list[0].id : null;
-  const cur = byId(S.notes, UI.noteId);
-  const editable = cur ? canEdit(cur.spaceId) : false;     // 지금 열린 메모를 고칠 수 있나
-  const team = cur ? isTeam(cur.spaceId) : false;
-  const movable = editable && editableSpaces().length > 1;
-
-  const item = n => `<div class="note-item ${n.id === UI.noteId ? 'on' : ''}" data-id="${esc(n.id)}">
-    <div class="t">${n.pinned ? '📌 ' : ''}${esc(n.title || '(제목 없음)')} ${mixedTag(n.spaceId)}</div>
-    <div class="s">${isTeam(n.spaceId) && n.updatedBy ? esc(userName(n.updatedBy)) + ' · ' : ''}${esc((n.body || '').split('\n').find(l => l.trim()) || ' ')}</div>
-  </div>`;
-
-  root.innerHTML = `
-  <div class="notes">
-    <section class="panel">
-      <div class="row" style="margin-bottom:8px">
-        <input type="search" id="note-q" placeholder="검색" value="${esc(UI.noteQuery)}" style="flex:1">
-        ${canEdit() ? `<button data-act="new" title="${esc(curSpace().name)} 에 만들기">+ 새 메모</button>` : readonlyNote()}
-      </div>
-      ${isMixed() && canEdit() ? `<div style="margin:-4px 0 6px">${targetHint()}</div>` : ''}
-      <div class="note-list">${list.length ? list.map(item).join('') : '<div class="empty">메모가 없습니다</div>'}</div>
-    </section>
-    <section class="panel editor">${cur ? `
-      <div class="row">
-        <input class="title-in" id="note-title" placeholder="제목" value="${esc(cur.title)}" style="flex:1" ${editable ? '' : 'readonly'}>
-        ${movable ? `<select id="note-space" title="이 메모를 다른 공간으로 옮기기">${editableSpaces().map(s =>
-          `<option value="${esc(s.id)}" ${s.id === cur.spaceId ? 'selected' : ''}>${esc(spaceLabel(s))}</option>`).join('')}</select>` : ''}
-        ${editable ? `<button class="ghost small" data-act="pin">${cur.pinned ? '📌 고정 해제' : '📌 고정'}</button>
-        <button class="danger small" data-act="del">삭제</button>` : '<span class="badge lang">보기 전용</span>'}
-      </div>
-      <textarea id="note-body" placeholder="내용 (자동 저장)" ${editable ? '' : 'readonly'}>${esc(cur.body)}</textarea>
-      <div class="muted small" id="note-meta">${cur.updatedAt ? '수정 ' + new Date(cur.updatedAt).toLocaleString('ko-KR') : ''}${team && cur.updatedBy ? ' · ' + esc(userName(cur.updatedBy)) : ''}</div>`
-      : '<div class="empty">왼쪽에서 메모를 고르거나 새로 만드세요</div>'}
-    </section>
-  </div>`;
-
-  $('#note-q', root).addEventListener('input', e => {
-    UI.noteQuery = e.target.value;
-    render();
-    const input = $('#note-q');
-    input.focus();
-    input.setSelectionRange(input.value.length, input.value.length);
-  });
-  on(root, 'click', '.note-item', el => { flushNote(); UI.noteId = el.dataset.id; render(); });
-  on(root, 'click', '[data-act="new"]', () => {
-    flushNote();
-    const n = { id: uid(), spaceId: UI.space, version: 0, title: '', body: '', pinned: false, updatedAt: nowIso() };
-    S.notes.push(n);
-    UI.noteId = n.id;
-    save('notes', n);
-    UI.noteQuery = '';
-    render();
-    $('#note-title').focus();
-  });
-  if (!cur || !editable) return;
-
-  const spaceSel = $('#note-space', root);
-  if (spaceSel) spaceSel.addEventListener('change', async () => {
-    const to = spaceSel.value;
-    if (!confirm(`이 메모를 "${spaceById(to).name}" 으로 옮길까요?${isTeam(to) ? '\n팀원 모두가 보게 됩니다.' : ''}`)) {
-      spaceSel.value = cur.spaceId;
-      return;
-    }
-    clearTimeout(noteTimer);
-    noteTimer = null;
-    await moveItem('notes', cur, to);
-  });
-  on(root, 'click', '[data-act="pin"]', () => { cur.pinned = !cur.pinned; save('notes', cur); render(); });
-  on(root, 'click', '[data-act="del"]', () => {
-    if (!confirm(`"${cur.title || '(제목 없음)'}" 메모를 삭제할까요?`)) return;
-    clearTimeout(noteTimer);
-    noteTimer = null;
-    S.notes = S.notes.filter(n => n.id !== cur.id);
-    removeItem('notes', cur);
-    UI.noteId = null;
-    render();
-  });
-  // 입력을 1.5초 멈추면 자동 저장 (다른 메모로 옮기거나 창을 닫으면 바로 저장). 목록은 해당 항목 글자만 바꿔 입력 포커스를 유지한다
-  const onInput = () => {
-    cur.title = $('#note-title').value;
-    cur.body = $('#note-body').value;
-    cur.updatedAt = nowIso();
-    cur.updatedBy = S.me.id;
-    const li = $(`.note-item[data-id="${CSS.escape(cur.id)}"]`, root);
-    if (li) li.outerHTML = item(cur);
-    setStatus('입력 중…');
-    clearTimeout(noteTimer);
-    noteTimer = setTimeout(flushNote, 1500);
-  };
-  $('#note-title', root).addEventListener('input', onInput);
-  $('#note-body', root).addEventListener('input', onInput);
-}
-
-function flushNote() {
-  if (!noteTimer) return;
-  clearTimeout(noteTimer);
-  noteTimer = null;
-  const cur = byId(S.notes, UI.noteId);
-  if (cur) save('notes', cur);
-}
-window.addEventListener('pagehide', flushNote, { capture: true });
+// 하루위키 화면은 wiki.js (renderWiki, flushNote)
 
 // ───────── 스니펫 ─────────
 /** 스니펫 언어. SQL 은 자체 강조(Oracle 힌트·바인드 변수), 나머지는 highlight.js */
@@ -1786,14 +1796,38 @@ async function importSpace(file) {
 
 function bindTools() {
   $('#space-sel').addEventListener('change', e => {
-    if (e.target.value === '__new') { e.target.value = UI.view; newTeamDialog(); return; }
+    if (e.target.value === '__new') { e.target.value = viewTeam() ? 't:' + viewTeam() : 'p'; newTeamDialog(); return; }
     flushNote();
-    setView(e.target.value);
+    // 팀을 고르면 지난번 "내 공간도 같이" 선택을 이어 간다
+    let both = false;
+    try { both = localStorage.getItem('withMine') === '1'; } catch (x) { /* 무시 */ }
+    setView(e.target.value.startsWith('t:') && both ? 'p' + e.target.value : e.target.value);
   });
-  $('#target-sel').addEventListener('change', e => {
-    UI.space = e.target.value;
-    render();
+  $('#with-mine-cb').addEventListener('change', e => {
+    const team = viewTeam();
+    if (!team) return;
+    try { localStorage.setItem('withMine', e.target.checked ? '1' : '0'); } catch (x) { /* 무시 */ }
+    flushNote();
+    setView((e.target.checked ? 'pt:' : 't:') + team);
   });
+  // 사이드바 접기 (넓게 보기). 접힌 상태는 기억한다
+  const applyMini = mini => {
+    document.body.classList.toggle('nav-mini', mini);
+    $('#btn-collapse').textContent = mini ? '»' : '«';
+    $('#btn-collapse').title = mini ? '사이드바 펼치기' : '사이드바 접기';
+  };
+  try { applyMini(localStorage.getItem('navMini') === '1'); } catch (e) { /* 무시 */ }
+  $('#btn-collapse').addEventListener('click', () => {
+    const mini = !document.body.classList.contains('nav-mini');
+    applyMini(mini);
+    try { localStorage.setItem('navMini', mini ? '1' : '0'); } catch (e) { /* 무시 */ }
+  });
+  // 휴대폰: 서랍 열고 닫기
+  const openNav = () => document.body.classList.add('nav-open');
+  $('#btn-nav').addEventListener('click', openNav);
+  $('#sn-scrim').addEventListener('click', () => document.body.classList.remove('nav-open'));
+  $('#bottombar').addEventListener('click', e => { if (e.target.closest('#bb-more')) openNav(); });
+  $('#tabs').addEventListener('click', () => document.body.classList.remove('nav-open'));
   // ⚙ 은 보기 범위에 팀이 있으면 그 팀, 아니면 내 공간 설정
   $('#btn-space').addEventListener('click', () => spaceSettings(viewTeam() || personalId()));
   $('#btn-account').addEventListener('click', accountDialog);

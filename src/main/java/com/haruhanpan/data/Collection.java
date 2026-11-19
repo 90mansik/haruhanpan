@@ -31,8 +31,10 @@ public enum Collection {
 			text("time", "start_time"), text("repeat", "repeat_rule"), text("until", "repeat_until"),
 			text("color"), text("memo"), bool("dday")),
 
+	// 하루위키 페이지: parentId(상위 페이지)·sort(같은 상위 아래 순서)·icon(이모지)·content(Editor.js JSON). body 는 content 의 글자만
 	NOTES("notes", "notes", "updated_at DESC",
-			text("title"), clob("body"), bool("pinned"), text("updatedAt", "updated_at")),
+			text("title"), clob("body"), bool("pinned"), text("updatedAt", "updated_at"),
+			text("parentId", "parent_id"), num("sort", "sort_no"), text("icon"), clob("content")),
 
 	SNIPPETS("snippets", "snippets", "updated_at DESC",
 			text("title"), text("tag"), clob("code"), text("memo"), text("lang"),

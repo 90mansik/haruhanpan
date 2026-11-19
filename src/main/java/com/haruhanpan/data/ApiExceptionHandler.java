@@ -12,6 +12,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 /**
  * 하루한판 API 오류를 짧은 JSON 으로. 스택트레이스·SQL 은 응답에 넣지 않고 서버 로그에만 남긴다.
@@ -21,6 +22,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class ApiExceptionHandler {
 
 	private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
+
+	@ExceptionHandler(MaxUploadSizeExceededException.class)
+	ResponseEntity<Map<String, Object>> tooLarge(MaxUploadSizeExceededException e) {
+		return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(Map.of("error", "이미지는 10MB 까지"));
+	}
 
 	@ExceptionHandler(IllegalArgumentException.class)
 	ResponseEntity<Map<String, Object>> badRequest(IllegalArgumentException e) {

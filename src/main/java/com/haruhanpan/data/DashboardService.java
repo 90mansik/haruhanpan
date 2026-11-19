@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import com.haruhanpan.wiki.WikiFiles;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,14 +42,16 @@ public class DashboardService {
 	private final ActivityRepository activity;
 	private final SpaceService spaces;
 	private final JdbcClient jdbc;
+	private final WikiFiles wikiFiles;
 
 	public DashboardService(CollectionRepository collections, RoutineRepository routines, ActivityRepository activity,
-			SpaceService spaces, JdbcClient jdbc) {
+			SpaceService spaces, JdbcClient jdbc, WikiFiles wikiFiles) {
 		this.collections = collections;
 		this.routines = routines;
 		this.activity = activity;
 		this.spaces = spaces;
 		this.jdbc = jdbc;
+		this.wikiFiles = wikiFiles;
 	}
 
 	/** 내가 속한 모든 공간의 데이터. 항목마다 spaceId 가 붙어 있다 */
@@ -90,6 +93,9 @@ public class DashboardService {
 			normalizeTodo(copy);
 			requireMemberOrBlank(spaceId, copy.get("assignee"));
 		}
+		if (c == Collection.NOTES) {
+			checkWikiPage(spaceId, id, copy);
+		}
 		Long expected = copy.get("version") instanceof Number n && n.longValue() > 0 ? n.longValue() : null;
 		boolean existed = collections.version(c, spaceId, id).isPresent();
 		long version = collections.upsert(c, spaceId, me.id(), id, copy, expected);
@@ -107,6 +113,12 @@ public class DashboardService {
 			.param("id", id).param("sid", spaceId).query(String.class).optional().orElse(null);
 		if (c == Collection.ROUTINES) {
 			routines.deleteChecksOf(id);
+		}
+		if (c == Collection.NOTES) {
+			// 위키 페이지는 하위 페이지와 그 이미지까지 함께 지운다
+			List<String> tree = subtree(spaceId, id);
+			wikiFiles.deleteForPages(spaceId, tree);
+			tree.stream().filter(x -> !x.equals(id)).forEach(x -> collections.delete(c, spaceId, x));
 		}
 		boolean deleted = collections.delete(c, spaceId, id);
 		if (deleted && access.isTeam()) {
@@ -133,6 +145,13 @@ public class DashboardService {
 		String title = jdbc.sql("SELECT title FROM " + c.table() + " WHERE id = :id AND space_id = :sid")
 			.param("id", id).param("sid", fromSpace).query(String.class).optional()
 			.orElseThrow(() -> new com.haruhanpan.common.ApiErrors.NotFound("not found"));
+		if (c == Collection.NOTES) {
+			// 위키 페이지는 하위 페이지·이미지까지 함께 옮기고, 옮긴 페이지는 새 공간의 최상위가 된다
+			List<String> tree = subtree(fromSpace, id);
+			tree.stream().filter(x -> !x.equals(id)).forEach(x -> collections.move(c, fromSpace, toSpace, x, me.id()));
+			wikiFiles.moveToSpace(fromSpace, tree, toSpace);
+			jdbc.sql("UPDATE notes SET parent_id = NULL WHERE id = :id").param("id", id).update();
+		}
 		collections.move(c, fromSpace, toSpace, id, me.id());
 		if (c == Collection.TODOS) {
 			Set<String> members = spaces.membersOf(List.of(toSpace)).getOrDefault(toSpace, List.of()).stream()
@@ -197,12 +216,21 @@ public class DashboardService {
 
 		// 다른 공간에서 내보낸 파일이면 id 가 겹칠 수 있다 → 겹치는 것만 새 id 로 바꿔 넣는다
 		Map<String, String> routineIdMap = new LinkedHashMap<>();
+		// 위키 페이지: id 가 바뀌어도 하위 페이지가 상위를 잃지 않도록 먼저 새 id 를 정해 둔다
+		Map<String, String> noteIdMap = new LinkedHashMap<>();
+		for (Map<String, Object> item : listOfMaps(data.get(Collection.NOTES.jsName()), Collection.NOTES.jsName())) {
+			String raw = String.valueOf(item.get("id"));
+			requireId(raw);
+			noteIdMap.put(raw, collections.existsAnywhere(Collection.NOTES, raw) ? com.haruhanpan.common.Ids.newId("i") : raw);
+		}
 		for (Collection c : Collection.values()) {
 			for (Map<String, Object> item : listOfMaps(data.get(c.jsName()), c.jsName())) {
 				Object rawId = item.get("id");
 				requireId(rawId == null ? "" : rawId.toString());
 				String id = rawId.toString();
-				if (collections.existsAnywhere(c, id)) {
+				if (c == Collection.NOTES) {
+					id = noteIdMap.get(id);
+				} else if (collections.existsAnywhere(c, id)) {
 					id = com.haruhanpan.common.Ids.newId("i");
 				}
 				if (c == Collection.ROUTINES) {
@@ -214,6 +242,9 @@ public class DashboardService {
 					if (!memberIds.contains(String.valueOf(copy.get("assignee")))) {
 						copy.put("assignee", "");
 					}
+				}
+				if (c == Collection.NOTES) {
+					copy.put("parentId", noteIdMap.getOrDefault(String.valueOf(copy.get("parentId")), ""));
 				}
 				collections.upsert(c, spaceId, me.id(), id, copy, null);
 			}
@@ -279,6 +310,57 @@ public class DashboardService {
 		if (!member) {
 			throw new IllegalArgumentException("담당자는 이 공간의 멤버여야 합니다");
 		}
+	}
+
+	/** 위키 페이지 검사: 상위 페이지는 같은 공간에 있어야 하고 자기 자신·자기 하위일 수 없다. 아이콘은 짧게 */
+	private void checkWikiPage(String spaceId, String id, Map<String, Object> page) {
+		String parent = page.get("parentId") == null ? "" : page.get("parentId").toString().strip();
+		page.put("parentId", parent);
+		if (!parent.isEmpty()) {
+			requireId(parent);
+			Map<String, String> parents = wikiParents(spaceId);
+			if (!parents.containsKey(parent)) {
+				throw new IllegalArgumentException("상위 페이지가 이 공간에 없습니다");
+			}
+			for (String p = parent; p != null && !p.isEmpty(); p = parents.get(p)) {
+				if (p.equals(id)) {
+					throw new IllegalArgumentException("페이지를 자기 하위로 옮길 수 없습니다");
+				}
+			}
+		}
+		Object icon = page.get("icon");
+		if (icon != null && icon.toString().codePointCount(0, icon.toString().length()) > 8) {
+			throw new IllegalArgumentException("아이콘은 이모지 하나");
+		}
+		Object content = page.get("content");
+		if (content != null && content.toString().length() > 2_000_000) {
+			throw new IllegalArgumentException("페이지가 너무 깁니다");
+		}
+	}
+
+	/** 공간의 위키 페이지 id → 상위 id */
+	private Map<String, String> wikiParents(String spaceId) {
+		Map<String, String> parents = new HashMap<>();
+		jdbc.sql("SELECT id, parent_id FROM notes WHERE space_id = :sid").param("sid", spaceId)
+			.query(rs -> {
+				parents.put(rs.getString("id"), rs.getString("parent_id"));
+			});
+		return parents;
+	}
+
+	/** 페이지와 그 아래 모든 하위 페이지 id (자기 자신 포함) */
+	private List<String> subtree(String spaceId, String id) {
+		Map<String, String> parents = wikiParents(spaceId);
+		List<String> tree = new ArrayList<>(List.of(id));
+		for (int i = 0; i < tree.size(); i++) {
+			String cur = tree.get(i);
+			parents.forEach((child, parent) -> {
+				if (cur.equals(parent) && !tree.contains(child)) {
+					tree.add(child);
+				}
+			});
+		}
+		return tree;
 	}
 
 	private static String titleOf(Map<String, Object> item) {

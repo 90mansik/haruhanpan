@@ -3,6 +3,7 @@ package com.haruhanpan.space;
 import com.haruhanpan.account.AppUser;
 import com.haruhanpan.common.ApiErrors.Forbidden;
 import com.haruhanpan.common.Ids;
+import com.haruhanpan.wiki.WikiFiles;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -20,9 +21,11 @@ public class SpaceService {
 	private static final Pattern COLOR = Pattern.compile("^#[0-9a-fA-F]{6}$");
 
 	private final SpaceRepository spaces;
+	private final WikiFiles wikiFiles;
 
-	public SpaceService(SpaceRepository spaces) {
+	public SpaceService(SpaceRepository spaces, WikiFiles wikiFiles) {
 		this.spaces = spaces;
+		this.wikiFiles = wikiFiles;
 	}
 
 	/** me 가 sid 공간에서 min 이상 역할인지 확인. 아니면 403 */
@@ -74,6 +77,7 @@ public class SpaceService {
 		if (!access.isTeam()) {
 			throw new IllegalArgumentException("개인 공간은 지울 수 없습니다");
 		}
+		wikiFiles.deleteAllIn(spaceId); // 위키 이미지 (디스크 파일은 트랜잭션이 끝난 뒤 지운다)
 		spaces.deleteCascade(spaceId);
 	}
 
