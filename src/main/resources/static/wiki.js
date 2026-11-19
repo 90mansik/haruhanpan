@@ -934,6 +934,45 @@ function attachBlockDrag(holder, editor) {
   window.addEventListener('pointercancel', end);
 }
 
+// ───────── 커서 따라 스크롤 ─────────
+// 편집 카드(.wk-main)가 자기 안에서 스크롤되므로, 엔터로 새 줄이 화면 아래에 생겨도 브라우저가 따라가지 않는다.
+// 커서가 보이는 영역(위쪽 서식 막대 아래 ~ 아래쪽 여백 위)을 벗어나면 그만큼 바로 스크롤한다
+function attachCaretFollow(holder) {
+  const follow = () => requestAnimationFrame(() => requestAnimationFrame(() => keepCaretVisible(holder)));
+  const KEYS = ['Enter', 'ArrowDown', 'ArrowUp', 'Backspace', 'Delete', 'PageDown', 'PageUp'];
+  holder.addEventListener('keydown', e => { if (KEYS.includes(e.key)) follow(); });
+  holder.addEventListener('input', follow);
+  holder.addEventListener('paste', () => setTimeout(follow, 60));
+}
+
+/** 지금 커서 위치 (빈 줄이면 글자 위치가 없어서 그 줄 칸의 위쪽 한 줄로 친다) */
+function caretRect(holder) {
+  const sel = getSelection();
+  if (!sel.rangeCount || !holder.contains(sel.anchorNode)) return null;
+  const range = sel.getRangeAt(0).cloneRange();
+  range.collapse(false);
+  const rect = range.getClientRects()[0];
+  if (rect && rect.height) return rect;
+  const node = sel.focusNode.nodeType === 1 ? sel.focusNode : sel.focusNode.parentElement;
+  const box = (node.closest('[contenteditable="true"]') || node).getBoundingClientRect();
+  const line = parseFloat(getComputedStyle(node).lineHeight) || 24;
+  return { top: box.top, bottom: Math.min(box.bottom, box.top + line) };
+}
+
+function keepCaretVisible(holder) {
+  const rect = caretRect(holder);
+  if (!rect) return;
+  const main = holder.closest('.wk-main');
+  const inCard = main && getComputedStyle(main).overflowY !== 'visible' && main.scrollHeight > main.clientHeight;
+  const view = inCard ? main.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+  const bar = document.querySelector('.wk-toolbar');
+  const barBottom = bar ? bar.getBoundingClientRect().bottom : 0;
+  const top = Math.max(view.top, barBottom) + 8;
+  const bottom = view.bottom - (window.innerWidth <= 760 ? 100 : 40); // 휴대폰: 아래쪽 탭 바 자리
+  const delta = rect.bottom > bottom ? rect.bottom - bottom : rect.top < top ? rect.top - top : 0;
+  if (delta) (inCard ? main : window).scrollBy({ top: delta, behavior: 'auto' });
+}
+
 // ───────── 편집기 ─────────
 async function mountEditor(cur, editable) {
   const holder = $('#wiki-editor');
@@ -960,6 +999,7 @@ async function mountEditor(cur, editable) {
     if (!editable) return;
     attachMarkdown(holder, editor);
     attachBlockDrag(holder, editor);
+    attachCaretFollow(holder);
     bindFormatBar(editor);
     const t = $('#note-title');
     if (t && !t.value && document.activeElement !== t) t.focus();
