@@ -746,6 +746,47 @@ function renderTopbar() {
   const pb = $('#btn-pending');
   pb.classList.toggle('hidden', !pendingCount);
   pb.textContent = `승인 대기 ${pendingCount}`;
+  $('#btn-users').classList.toggle('hidden', !S.me.admin);
+  $('#btn-ledger').classList.toggle('hidden', !S.me.ledger); // 하루가계부는 허락받은 사람만
+}
+
+/** 사용자 관리 (사이트 관리자): 계정마다 관리자 · 하루가계부 권한을 켜고 끈다. 바뀐 권한은 그 사람의 다음 요청부터 적용 */
+async function usersDialog() {
+  const dlg = $('#dlg');
+  let list;
+  try { list = await request('GET', '/api/admin/users'); } catch (e) { alert(e.message); return; }
+  const sw = (u, key, label, disabled, why) => `<label class="perm ${disabled ? 'locked' : ''}" title="${esc(why || '')}">
+    <input type="checkbox" data-perm="${key}" ${u[key] ? 'checked' : ''} ${disabled ? 'disabled' : ''}><span>${label}</span></label>`;
+  dlg.innerHTML = `<form method="dialog" class="users-dlg">
+    <h3>사용자 관리 <span class="muted small">${list.length}명</span></h3>
+    <p class="muted small" style="margin:0"><b>관리자</b>는 가입 승인, 비밀번호 재설정 링크, 이 화면을 쓸 수 있어요.
+      <b>하루가계부</b>를 켠 사람만 가계부를 열 수 있어요. 하루한판은 모두 쓸 수 있어요.</p>
+    <div class="member-list">${list.map(u => `<div class="user-row" data-uid="${esc(u.id)}">
+      ${avatar(u.id)}
+      <div class="who"><b>${esc(u.name || u.login)}</b>${u.id === S.me.id ? ' <span class="muted small">(나)</span>' : ''}
+        <div class="muted small">${esc(u.email || u.login)}${u.createdAt ? ' · ' + esc(u.createdAt.slice(0, 10)) + ' 가입' : ''}</div></div>
+      <div class="perms">${sw(u, 'admin', '관리자', u.id === S.me.id, u.id === S.me.id ? '내 관리자 권한은 다른 관리자만 뺄 수 있어요' : '')}${sw(u, 'ledger', '하루가계부')}</div>
+    </div>`).join('')}</div>
+    <div class="dlg-acts"><span class="grow"></span><button type="button" class="ghost" data-act="close">닫기</button></div>
+  </form>`;
+  const form = $('form', dlg);
+  form.addEventListener('submit', e => e.preventDefault());
+  on(form, 'click', '[data-act="close"]', () => dlg.close());
+  on(form, 'change', '[data-perm]', async el => {
+    const row = el.closest('[data-uid]');
+    el.disabled = true;
+    try {
+      await request('PUT', `/api/admin/users/${encodeURIComponent(row.dataset.uid)}/permissions`, { [el.dataset.perm]: el.checked });
+      setStatus(`${row.querySelector('b').textContent} 님 권한을 바꿨어요`);
+      if (row.dataset.uid === S.me.id) { await loadAll(); render(); }
+    } catch (e) {
+      el.checked = !el.checked; // 되돌리기
+      alert(e.message);
+    } finally {
+      el.disabled = false;
+    }
+  });
+  if (!dlg.open) dlg.showModal();
 }
 
 /** Google 로 직접 가입해 승인을 기다리는 사람에게 보이는 화면 */
@@ -1859,6 +1900,7 @@ function bindTools() {
   $('#btn-space').addEventListener('click', () => spaceSettings(viewTeam() || personalId()));
   $('#btn-account').addEventListener('click', accountDialog);
   $('#btn-pending').addEventListener('click', pendingDialog);
+  $('#btn-users').addEventListener('click', usersDialog);
   // 하루가계부는 공간 하나씩 본다: 지금 저장 위치(팀만 볼 땐 팀, 그 외엔 내 공간)의 가계부를 연다
   $('#btn-ledger').addEventListener('click', () => { location.href = '/ledger?space=' + encodeURIComponent(curSpace().id); });
   $('#btn-export').addEventListener('click', exportSpace);

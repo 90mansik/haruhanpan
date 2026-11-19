@@ -3,7 +3,9 @@ package com.haruhanpan.account;
 import com.haruhanpan.invite.InviteService;
 import java.util.Map;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import java.util.List;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -18,6 +20,8 @@ import org.springframework.web.bind.annotation.RestController;
  * POST /api/users/{uid}/reset-link                  비밀번호 재설정 링크 (사이트 관리자만)
  * POST   /api/admin/users/{uid}/approve {spaceId?, role?}  가입 승인 (+ 팀 공간에 추가)
  * DELETE /api/admin/users/{uid}                     가입 거절 (승인 대기 계정 삭제)
+ * GET    /api/admin/users                           사용자 관리: 모든 사용자와 권한
+ * PUT    /api/admin/users/{uid}/permissions {admin?, ledger?}  관리자·가계부 권한 켜고 끄기
  * </pre>
  */
 @RestController
@@ -68,6 +72,17 @@ public class AccountController {
 			@RequestBody(required = false) Map<String, String> body) {
 		Map<String, String> b = body == null ? Map.of() : body;
 		accounts.approve(me, uid, b.get("spaceId"), b.get("role"));
+		return Map.of("ok", true);
+	}
+
+	@GetMapping("/api/admin/users")
+	public List<Map<String, Object>> users(AppUser me) {
+		return accounts.allUsers(me);
+	}
+
+	@PutMapping("/api/admin/users/{uid}/permissions")
+	public Map<String, Object> permissions(AppUser me, @PathVariable String uid, @RequestBody Map<String, Boolean> body) {
+		accounts.setPermissions(me, uid, body.get("admin"), body.get("ledger"));
 		return Map.of("ok", true);
 	}
 

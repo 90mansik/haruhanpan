@@ -10,7 +10,7 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class UserRepository {
 
-	private static final String COLUMNS = "id, login, name, password_hash, admin, disabled, password_set, approved";
+	private static final String COLUMNS = "id, login, name, password_hash, admin, disabled, password_set, approved, ledger";
 
 	private final JdbcClient jdbc;
 
@@ -58,6 +58,37 @@ public class UserRepository {
 		jdbc.sql("UPDATE users SET approved = 1 WHERE id = :id").param("id", id).update();
 	}
 
+	/** 사용자 관리 화면용: 승인된 모든 사용자 (Google 이메일 포함, 가입 순) */
+	public List<Map<String, Object>> findAllForAdmin() {
+		return jdbc.sql("""
+				SELECT u.id, u.login, u.name, u.created_at, i.email, u.admin, u.ledger, u.password_set
+				  FROM users u LEFT JOIN user_identities i ON i.user_id = u.id
+				 WHERE u.approved = 1
+				 ORDER BY u.created_at, u.login
+				""")
+			.query((rs, n) -> {
+				Map<String, Object> m = new LinkedHashMap<>();
+				m.put("id", rs.getString(1));
+				m.put("login", rs.getString(2));
+				m.put("name", nvl(rs.getString(3)));
+				m.put("createdAt", nvl(rs.getString(4)));
+				m.put("email", nvl(rs.getString(5)));
+				m.put("admin", rs.getInt(6) != 0);
+				m.put("ledger", rs.getInt(7) != 0);
+				m.put("passwordSet", rs.getInt(8) != 0);
+				return m;
+			}).list();
+	}
+
+	public int countAdmins() {
+		return jdbc.sql("SELECT COUNT(*) FROM users WHERE admin = 1 AND disabled = 0").query(Integer.class).single();
+	}
+
+	public void updatePermissions(String id, boolean admin, boolean ledger) {
+		jdbc.sql("UPDATE users SET admin = :admin, ledger = :ledger WHERE id = :id")
+			.param("admin", admin ? 1 : 0).param("ledger", ledger ? 1 : 0).param("id", id).update();
+	}
+
 	/** 승인 대기 중인 사용자 (Google 이메일 포함, 오래된 순) */
 	public List<Map<String, Object>> findPending() {
 		return jdbc.sql("""
@@ -98,6 +129,6 @@ public class UserRepository {
 	private static AppUser map(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
 		return new AppUser(rs.getString("id"), rs.getString("login"), rs.getString("name"),
 				rs.getString("password_hash"), rs.getInt("admin") != 0, rs.getInt("disabled") != 0,
-				rs.getInt("password_set") != 0, rs.getInt("approved") != 0);
+				rs.getInt("password_set") != 0, rs.getInt("approved") != 0, rs.getInt("ledger") != 0);
 	}
 }

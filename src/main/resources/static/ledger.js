@@ -1103,6 +1103,7 @@ async function init() {
     L.spaces = meta.spaces;
   } catch (e) {
     if (e.status === 401) { location.replace('/login.html'); return; }
+    if (e.status === 403 && e.message === 'ledger_denied') { location.replace('/?ledger=denied'); return; } // 가계부 권한 없음
     if (e.status === 403) { location.replace('/board'); return; } // 승인 대기 등: 하루한판이 안내한다
     $('#main').innerHTML = '<div class="empty">서버에 연결할 수 없습니다. 잠시 후 새로고침하세요.</div>';
     return;

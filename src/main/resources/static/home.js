@@ -116,6 +116,12 @@ async function init() {
     p.classList.remove('hidden');
   }
   boardStats(data);
+  if (new URLSearchParams(location.search).get('ledger') === 'denied') {
+    $('#notice').textContent = '하루가계부는 사이트 관리자가 허락한 사람만 쓸 수 있어요. 관리자에게 요청해 주세요.';
+    $('#notice').classList.remove('hidden');
+    history.replaceState(null, '', '/');
+  }
+  if (!data.me.ledger) { $('#card-ledger').remove(); return; } // 하루가계부 권한이 없으면 카드를 보이지 않는다
   try {
     await ledgerStats(data.spaces);
   } catch (e) {

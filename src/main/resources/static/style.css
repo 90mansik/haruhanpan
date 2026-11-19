@@ -893,3 +893,20 @@ body.nav-mini .sn-badge.alert { position: absolute; top: 2px; right: 4px; min-wi
 .wk-kid-who b { font-weight: 500; color: var(--muted); }
 .recent-page .av { flex: none; }
 
+/* 사용자 관리 (사이트 관리자) */
+.users-dlg { width: min(620px, 100%); }
+.user-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.user-row:last-child { border-bottom: 0; }
+.user-row .who { flex: 1; min-width: 0; }
+.user-row .who .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.perms { display: flex; gap: 6px; flex: none; }
+.perm { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 999px; font-size: 12.5px; cursor: pointer; user-select: none; }
+.perm:has(input:checked) { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.perm input { margin: 0; accent-color: var(--on-accent); }
+.perm.locked { opacity: .6; cursor: not-allowed; }
+.home-notice { padding: 12px 16px; margin-bottom: 14px; border-left: 4px solid var(--warn, #b7791f); }
+@media (max-width: 600px) {
+  .user-row { flex-wrap: wrap; }
+  .perms { width: 100%; padding-left: 42px; }
+}
+

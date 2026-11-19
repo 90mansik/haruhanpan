@@ -1,6 +1,7 @@
 package com.haruhanpan.ledger;
 
 import com.haruhanpan.account.AppUser;
+import com.haruhanpan.common.ApiErrors.Forbidden;
 import java.util.Map;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -36,25 +37,28 @@ public class LedgerController {
 	}
 
 	@GetMapping("/ledger")
-	public String page() {
-		return "forward:/ledger.html";
+	public String page(AppUser me) {
+		return me.ledger() ? "forward:/ledger.html" : "redirect:/?ledger=denied";
 	}
 
 	@GetMapping("/api/ledger/meta")
 	@ResponseBody
 	public Map<String, Object> meta(AppUser me) {
+		requireLedger(me);
 		return service.meta(me);
 	}
 
 	@GetMapping("/api/ledger/spaces/{sid}")
 	@ResponseBody
 	public Map<String, Object> month(AppUser me, @PathVariable String sid, @RequestParam String month) {
+		requireLedger(me);
 		return service.month(me, sid, month);
 	}
 
 	@GetMapping("/api/ledger/spaces/{sid}/year")
 	@ResponseBody
 	public Map<String, Object> year(AppUser me, @PathVariable String sid, @RequestParam int year) {
+		requireLedger(me);
 		return service.year(me, sid, year);
 	}
 
@@ -62,12 +66,14 @@ public class LedgerController {
 	@ResponseBody
 	public Map<String, Object> saveEntry(AppUser me, @PathVariable String sid, @PathVariable String id,
 			@RequestBody Map<String, Object> body) {
+		requireLedger(me);
 		return Map.of("ok", true, "version", service.saveEntry(me, sid, id, body));
 	}
 
 	@DeleteMapping("/api/ledger/spaces/{sid}/entries/{id}")
 	@ResponseBody
 	public Map<String, Object> deleteEntry(AppUser me, @PathVariable String sid, @PathVariable String id) {
+		requireLedger(me);
 		service.deleteEntry(me, sid, id);
 		return Map.of("ok", true);
 	}
@@ -76,12 +82,14 @@ public class LedgerController {
 	@ResponseBody
 	public Map<String, Object> saveRecurring(AppUser me, @PathVariable String sid, @PathVariable String id,
 			@RequestBody Map<String, Object> body) {
+		requireLedger(me);
 		return Map.of("ok", true, "version", service.saveRecurring(me, sid, id, body));
 	}
 
 	@DeleteMapping("/api/ledger/spaces/{sid}/recurring/{id}")
 	@ResponseBody
 	public Map<String, Object> deleteRecurring(AppUser me, @PathVariable String sid, @PathVariable String id) {
+		requireLedger(me);
 		service.deleteRecurring(me, sid, id);
 		return Map.of("ok", true);
 	}
@@ -89,7 +97,14 @@ public class LedgerController {
 	@PutMapping("/api/ledger/spaces/{sid}/settings")
 	@ResponseBody
 	public Map<String, Object> saveSettings(AppUser me, @PathVariable String sid, @RequestBody Map<String, Object> body) {
+		requireLedger(me);
 		service.saveSettings(me, sid, body);
 		return Map.of("ok", true);
+	}
+
+	private static void requireLedger(AppUser me) {
+		if (!me.ledger()) {
+			throw new Forbidden("ledger_denied");
+		}
 	}
 }

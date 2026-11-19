@@ -75,6 +75,37 @@ public class AccountService {
 		return users.findPending();
 	}
 
+	/** 사용자 관리: 승인된 모든 사용자와 권한 */
+	public List<Map<String, Object>> allUsers(AppUser me) {
+		requireAdmin(me);
+		return users.findAllForAdmin();
+	}
+
+	/**
+	 * 권한 바꾸기 (사이트 관리자). 값을 보내지 않은 항목은 그대로 둔다.
+	 * 자기 자신의 관리자 권한은 뺄 수 없다 (실수로 아무도 관리할 수 없게 되는 것을 막는다).
+	 */
+	@Transactional
+	public void setPermissions(AppUser me, String userId, Boolean admin, Boolean ledger) {
+		requireAdmin(me);
+		AppUser target = users.findById(userId).orElseThrow(() -> new IllegalArgumentException("없는 사용자"));
+		if (!target.approved()) {
+			throw new IllegalArgumentException("가입 승인 후에 권한을 줄 수 있습니다");
+		}
+		boolean nextAdmin = admin == null ? target.admin() : admin;
+		boolean nextLedger = ledger == null ? target.ledger() : ledger;
+		if (target.admin() && !nextAdmin) {
+			if (target.id().equals(me.id())) {
+				throw new IllegalArgumentException("내 관리자 권한은 뺄 수 없습니다. 다른 관리자에게 부탁하세요");
+			}
+			if (users.countAdmins() <= 1) {
+				throw new IllegalArgumentException("관리자가 한 명은 있어야 합니다");
+			}
+		}
+		users.updatePermissions(userId, nextAdmin, nextLedger);
+		log.info("권한 변경 user={} admin={} ledger={} by={}", target.login(), nextAdmin, nextLedger, me.login());
+	}
+
 	/** 승인. spaceId 가 있으면 그 팀 공간에 바로 넣는다 (관리자가 그 공간의 관리자여야 함) */
 	@Transactional
 	public void approve(AppUser me, String userId, String spaceId, String role) {
