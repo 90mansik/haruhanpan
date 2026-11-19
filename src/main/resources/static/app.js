@@ -750,7 +750,10 @@ function renderTopbar() {
   $('#btn-ledger').classList.toggle('hidden', !S.me.ledger); // 하루가계부는 허락받은 사람만
 }
 
-/** 사용자 관리 (사이트 관리자): 계정마다 관리자 · 하루가계부 권한을 켜고 끈다. 바뀐 권한은 그 사람의 다음 요청부터 적용 */
+/**
+ * 사용자 관리 (사이트 관리자): 계정마다 관리자 · 하루가계부 권한을 켜고 끈다.
+ * 체크는 화면에서만 바뀌고, "저장"을 누르면 바뀐 것만 한 번에(서버에서 한 트랜잭션으로) 저장한다.
+ */
 async function usersDialog() {
   const dlg = $('#dlg');
   let list;
@@ -767,22 +770,41 @@ async function usersDialog() {
         <div class="muted small">${esc(u.email || u.login)}${u.createdAt ? ' · ' + esc(u.createdAt.slice(0, 10)) + ' 가입' : ''}</div></div>
       <div class="perms">${sw(u, 'admin', '관리자', u.id === S.me.id, u.id === S.me.id ? '내 관리자 권한은 다른 관리자만 뺄 수 있어요' : '')}${sw(u, 'ledger', '하루가계부')}</div>
     </div>`).join('')}</div>
-    <div class="dlg-acts"><span class="grow"></span><button type="button" class="ghost" data-act="close">닫기</button></div>
+    <div class="dlg-acts"><span class="muted small" id="perm-dirty"></span><span class="grow"></span>
+      <button type="button" class="ghost" data-act="close">닫기</button>
+      <button type="button" data-act="save" disabled>저장</button></div>
   </form>`;
   const form = $('form', dlg);
+  const byUid = Object.fromEntries(list.map(u => [u.id, u]));
+  // 처음 값과 다른 칸만 모은다 → [{id, admin?, ledger?}]
+  const changes = () => [...form.querySelectorAll('.user-row')].map(row => {
+    const u = byUid[row.dataset.uid];
+    const c = { id: u.id };
+    row.querySelectorAll('[data-perm]').forEach(el => { if (el.checked !== u[el.dataset.perm]) c[el.dataset.perm] = el.checked; });
+    return Object.keys(c).length > 1 ? c : null;
+  }).filter(Boolean);
+  const refresh = () => {
+    const n = changes().length;
+    $('[data-act="save"]', form).disabled = !n;
+    $('#perm-dirty', form).textContent = n ? `${n}명 바뀜 · 저장을 눌러야 적용돼요` : '';
+  };
   form.addEventListener('submit', e => e.preventDefault());
-  on(form, 'click', '[data-act="close"]', () => dlg.close());
-  on(form, 'change', '[data-perm]', async el => {
-    const row = el.closest('[data-uid]');
+  on(form, 'change', '[data-perm]', refresh);
+  on(form, 'click', '[data-act="close"]', () => {
+    if (changes().length && !confirm('저장하지 않은 변경이 있어요. 닫을까요?')) return;
+    dlg.close();
+  });
+  on(form, 'click', '[data-act="save"]', async el => {
+    const list = changes();
+    if (!list.length) return;
     el.disabled = true;
     try {
-      await request('PUT', `/api/admin/users/${encodeURIComponent(row.dataset.uid)}/permissions`, { [el.dataset.perm]: el.checked });
-      setStatus(`${row.querySelector('b').textContent} 님 권한을 바꿨어요`);
-      if (row.dataset.uid === S.me.id) { await loadAll(); render(); }
+      await request('PUT', '/api/admin/users/permissions', list);
+      setStatus(`${list.length}명 권한을 저장했어요`);
+      if (list.some(c => c.id === S.me.id)) { await loadAll(); render(); }
+      dlg.close();
     } catch (e) {
-      el.checked = !el.checked; // 되돌리기
-      alert(e.message);
-    } finally {
+      alert(e.message + '\n\n아무것도 바뀌지 않았어요.');
       el.disabled = false;
     }
   });

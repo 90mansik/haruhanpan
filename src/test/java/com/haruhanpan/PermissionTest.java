@@ -77,8 +77,9 @@ class PermissionTest {
 		return body(mvc.perform(get("/api/all").with(user(login))).andExpect(status().isOk())).get("me");
 	}
 
+	/** 한 사람 권한 바꾸기: content 는 {admin?, ledger?} */
 	private ResultActions grant(String by, String uid, String content) throws Exception {
-		return as(by, put("/api/admin/users/" + uid + "/permissions"), content);
+		return as(by, put("/api/admin/users/permissions"), "[{\"id\":\"" + uid + "\"," + content.substring(1) + "]");
 	}
 
 	@Test
@@ -124,5 +125,27 @@ class PermissionTest {
 		grant("haru", kim, "{\"admin\":false}").andExpect(status().isForbidden()); // 이제 관리자가 아님
 		assertThat(me("kim").get("admin").asBoolean()).isTrue();
 		grant("kim", "u-nope", "{\"ledger\":true}").andExpect(status().isBadRequest());
+	}
+
+	@Test
+	void 여러_명을_한_번에_바꾸고_하나라도_안되면_모두_취소() throws Exception {
+		String haru = me("haru").get("id").asString();
+		// 김철수 관리자 + 가계부를 한 번에
+		as("haru", put("/api/admin/users/permissions"),
+				"[{\"id\":\"" + kim + "\",\"admin\":true},{\"id\":\"" + kim + "\",\"ledger\":true}]")
+			.andExpect(status().isOk());
+		assertThat(me("kim").get("admin").asBoolean()).isTrue();
+		assertThat(me("kim").get("ledger").asBoolean()).isTrue();
+
+		// 김철수 가계부 끄기 + 자기 관리자 빼기(규칙 위반) → 둘 다 취소
+		as("haru", put("/api/admin/users/permissions"),
+				"[{\"id\":\"" + kim + "\",\"ledger\":false},{\"id\":\"" + haru + "\",\"admin\":false}]")
+			.andExpect(status().isBadRequest());
+		assertThat(me("kim").get("ledger").asBoolean()).isTrue();
+		assertThat(me("haru").get("admin").asBoolean()).isTrue();
+
+		// 다른 관리자의 권한은 뺄 수 있고, 빠진 사람은 바로 관리 기능을 못 쓴다
+		as("kim", put("/api/admin/users/permissions"), "[{\"id\":\"" + haru + "\",\"admin\":false}]").andExpect(status().isOk());
+		as("haru", put("/api/admin/users/permissions"), "[]").andExpect(status().isForbidden()); // 이제 관리자가 아님
 	}
 }

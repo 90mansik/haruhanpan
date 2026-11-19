@@ -82,28 +82,41 @@ public class AccountService {
 	}
 
 	/**
-	 * 권한 바꾸기 (사이트 관리자). 값을 보내지 않은 항목은 그대로 둔다.
-	 * 자기 자신의 관리자 권한은 뺄 수 없다 (실수로 아무도 관리할 수 없게 되는 것을 막는다).
+	 * 권한 바꾸기 (사이트 관리자). 여러 사람의 변경을 한 트랜잭션으로 저장한다: 하나라도 규칙에 걸리면 모두 취소.
+	 * 각 항목은 {id, admin?, ledger?} 이고 보내지 않은 값은 그대로 둔다.
+	 * 자기 자신의 관리자 권한은 뺄 수 없고 (실수로 아무도 관리할 수 없게 되는 것을 막는다), 관리자는 한 명 이상 남아야 한다.
 	 */
 	@Transactional
-	public void setPermissions(AppUser me, String userId, Boolean admin, Boolean ledger) {
+	public int setPermissions(AppUser me, List<Map<String, Object>> changes) {
 		requireAdmin(me);
-		AppUser target = users.findById(userId).orElseThrow(() -> new IllegalArgumentException("없는 사용자"));
-		if (!target.approved()) {
-			throw new IllegalArgumentException("가입 승인 후에 권한을 줄 수 있습니다");
+		if (changes == null || changes.isEmpty()) {
+			return 0;
 		}
-		boolean nextAdmin = admin == null ? target.admin() : admin;
-		boolean nextLedger = ledger == null ? target.ledger() : ledger;
-		if (target.admin() && !nextAdmin) {
-			if (target.id().equals(me.id())) {
+		if (changes.size() > 500) {
+			throw new IllegalArgumentException("한 번에 너무 많이 바꿀 수 없습니다");
+		}
+		for (Map<String, Object> c : changes) {
+			String userId = String.valueOf(c.get("id"));
+			AppUser target = users.findById(userId).orElseThrow(() -> new IllegalArgumentException("없는 사용자"));
+			if (!target.approved()) {
+				throw new IllegalArgumentException("가입 승인 후에 권한을 줄 수 있습니다");
+			}
+			boolean nextAdmin = flag(c.get("admin"), target.admin());
+			boolean nextLedger = flag(c.get("ledger"), target.ledger());
+			if (target.admin() && !nextAdmin && target.id().equals(me.id())) {
 				throw new IllegalArgumentException("내 관리자 권한은 뺄 수 없습니다. 다른 관리자에게 부탁하세요");
 			}
-			if (users.countAdmins() <= 1) {
-				throw new IllegalArgumentException("관리자가 한 명은 있어야 합니다");
-			}
+			users.updatePermissions(userId, nextAdmin, nextLedger);
+			log.info("권한 변경 user={} admin={} ledger={} by={}", target.login(), nextAdmin, nextLedger, me.login());
 		}
-		users.updatePermissions(userId, nextAdmin, nextLedger);
-		log.info("권한 변경 user={} admin={} ledger={} by={}", target.login(), nextAdmin, nextLedger, me.login());
+		if (users.countAdmins() < 1) {
+			throw new IllegalArgumentException("관리자가 한 명은 있어야 합니다"); // 롤백된다
+		}
+		return changes.size();
+	}
+
+	private static boolean flag(Object value, boolean current) {
+		return value instanceof Boolean b ? b : current;
 	}
 
 	/** 승인. spaceId 가 있으면 그 팀 공간에 바로 넣는다 (관리자가 그 공간의 관리자여야 함) */

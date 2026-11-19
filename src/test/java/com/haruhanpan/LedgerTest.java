@@ -93,7 +93,7 @@ class LedgerTest {
 			.andExpect(status().isOk());
 		// 하루가계부는 관리자가 허락한 사람만 쓴다
 		String uid = body(mvc.perform(get("/api/all").with(user(login)))).get("me").get("id").asString();
-		as("haru", put("/api/admin/users/" + uid + "/permissions"), "{\"ledger\":true}").andExpect(status().isOk());
+		as("haru", put("/api/admin/users/permissions"), "[{\"id\":\"" + uid + "\",\"ledger\":true}]").andExpect(status().isOk());
 	}
 
 	private String userId(String login) throws Exception {

@@ -21,7 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
  * POST   /api/admin/users/{uid}/approve {spaceId?, role?}  가입 승인 (+ 팀 공간에 추가)
  * DELETE /api/admin/users/{uid}                     가입 거절 (승인 대기 계정 삭제)
  * GET    /api/admin/users                           사용자 관리: 모든 사용자와 권한
- * PUT    /api/admin/users/{uid}/permissions {admin?, ledger?}  관리자·가계부 권한 켜고 끄기
+ * PUT    /api/admin/users/permissions [{id, admin?, ledger?}]  관리자·가계부 권한 (여러 명을 한 번에, 한 트랜잭션)
  * </pre>
  */
 @RestController
@@ -80,10 +80,9 @@ public class AccountController {
 		return accounts.allUsers(me);
 	}
 
-	@PutMapping("/api/admin/users/{uid}/permissions")
-	public Map<String, Object> permissions(AppUser me, @PathVariable String uid, @RequestBody Map<String, Boolean> body) {
-		accounts.setPermissions(me, uid, body.get("admin"), body.get("ledger"));
-		return Map.of("ok", true);
+	@PutMapping("/api/admin/users/permissions")
+	public Map<String, Object> permissions(AppUser me, @RequestBody List<Map<String, Object>> changes) {
+		return Map.of("ok", true, "changed", accounts.setPermissions(me, changes));
 	}
 
 	/** 가입 거절 (사이트 관리자): 승인 대기 중인 계정 삭제 */
