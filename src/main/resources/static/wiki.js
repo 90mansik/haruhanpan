@@ -142,9 +142,30 @@ function flushNote() {
   if (cur) save('notes', cur);
 }
 window.addEventListener('pagehide', flushNote, { capture: true });
+/** 누가 언제 마지막으로 고쳤는지. 팀 공간이면 사람(아바타·이름), 내 공간이면 시간만 */
+function editedTitle(p) {
+  if (!p.updatedAt) return '';
+  const when = new Date(p.updatedAt).toLocaleString('ko-KR');
+  return isTeam(p.spaceId) && p.updatedBy
+    ? `마지막 수정: ${userName(p.updatedBy)} · ${when}${p.createdBy ? ` (만든 사람 ${userName(p.createdBy)})` : ''}`
+    : `마지막 수정: ${when}`;
+}
+function editedLine(p) {
+  if (!p.updatedAt) return '';
+  return isTeam(p.spaceId) && p.updatedBy
+    ? `${avatar(p.updatedBy, true)}<b>${esc(userName(p.updatedBy))}</b> · ${timeAgo(p.updatedAt)} 수정`
+    : `${timeAgo(p.updatedAt)} 수정`;
+}
 function touchPage(p) {
+  const who = p.updatedBy;
   p.updatedAt = nowIso();
   p.updatedBy = S.me.id;
+  const meta = document.getElementById('note-meta');
+  if (meta && (who !== p.updatedBy || !meta.dataset.fresh)) { // 고친 사람이 바뀌면 바로 "나 · 방금"으로
+    meta.innerHTML = editedLine(p);
+    meta.title = editedTitle(p);
+    meta.dataset.fresh = '1';
+  }
   setStatus('입력 중…');
   clearTimeout(noteTimer);
   noteTimer = setTimeout(flushNote, 1500);
@@ -179,7 +200,8 @@ function renderWiki(root) {
       <div class="wk-row ${p.id === UI.noteId ? 'on' : ''}" data-id="${esc(p.id)}" style="--d:${depth}" ${can ? 'draggable="true"' : ''}>
         <button class="wk-tg ${kids.length ? '' : 'none'}" data-act="toggle" aria-label="${isOpen ? '접기' : '펼치기'}">${kids.length ? (isOpen ? '▾' : '▸') : ''}</button>
         <span class="wk-ic">${esc(pageIcon(p))}</span>
-        <span class="wk-t">${esc(pageTitle(p))}</span>
+        <span class="wk-t" title="${esc(editedTitle(p))}">${esc(pageTitle(p))}</span>
+        ${isTeam(p.spaceId) && p.updatedBy ? `<span class="wk-who">${avatar(p.updatedBy, true)}</span>` : ''}
         ${can ? `<button class="wk-act" data-act="child" title="하위 페이지 추가" aria-label="하위 페이지 추가">＋</button>
           <button class="wk-act" data-act="menu" title="더 보기" aria-label="더 보기">⋯</button>` : ''}
       </div>
@@ -225,13 +247,13 @@ function renderWiki(root) {
       <div class="wk-head">
         <button class="wk-icon" data-act="icon" ${editable ? '' : 'disabled'} title="아이콘 바꾸기">${esc(pageIcon(cur))}</button>
         <input class="wk-title" id="note-title" placeholder="제목 없음" value="${esc(cur.title)}" ${editable ? '' : 'readonly'} autocomplete="off">
-        <div class="muted small wk-meta" id="note-meta">${cur.updatedAt ? '수정 ' + new Date(cur.updatedAt).toLocaleString('ko-KR') : ''}${isTeam(cur.spaceId) && cur.updatedBy ? ' · ' + esc(userName(cur.updatedBy)) : ''}</div>
+        <div class="muted small wk-meta" id="note-meta" title="${esc(editedTitle(cur))}">${editedLine(cur)}</div>
       </div>
       ${editable ? formatBarHtml() : ''}
       <div id="wiki-editor" class="wk-editor"><div class="empty">편집기를 불러오는 중…</div></div>
       ${(() => { const kids = childrenOf(cur.id, cur.spaceId); return kids.length || editable ? `<div class="wk-kids">
         <div class="muted small">하위 페이지</div>
-        ${kids.map(k => `<a href="#wiki" data-go="${esc(k.id)}">${esc(pageIcon(k))} ${esc(pageTitle(k))}</a>`).join('')}
+        ${kids.map(k => `<a href="#wiki" data-go="${esc(k.id)}" title="${esc(editedTitle(k))}">${esc(pageIcon(k))} ${esc(pageTitle(k))}<span class="wk-kid-who muted small">${editedLine(k)}</span></a>`).join('')}
         ${editable ? '<button class="ghost small" data-act="child-cur">＋ 하위 페이지</button>' : ''}
       </div>` : ''; })()}`
       : `<div class="empty">${pages.length ? '왼쪽에서 페이지를 고르세요' : canEdit() ? '첫 페이지를 만들어 보세요' : '페이지가 없습니다'}
@@ -649,34 +671,39 @@ function attachMarkdown(holder, editor) {
   holder.addEventListener('compositionend', () => setTimeout(() => check({ isComposing: false }), 0));
 }
 
-// ───────── 취소선 도구 (Editor.js 에 없어서 직접. sanitize 에 s 를 넣어야 저장된다) ─────────
-class StrikeTool {
-  static get isInline() { return true; }
-  static get title() { return '취소선'; }
-  static get sanitize() { return { s: {}, strike: {} }; }
-  constructor({ api }) { this.api = api; this.button = null; }
-  render() {
-    this.button = document.createElement('button');
-    this.button.type = 'button';
-    this.button.classList.add(this.api.styles.inlineToolButton);
-    this.button.innerHTML = '<span style="text-decoration:line-through;font-weight:600;font-size:14px">S</span>';
-    return this.button;
-  }
-  surround(range) {
-    if (!range) return;
-    const found = this.api.selection.findParentTag('S');
-    if (found) { found.replaceWith(...found.childNodes); return; }
-    const el = document.createElement('s');
-    el.appendChild(range.extractContents());
-    range.insertNode(el);
-    this.api.selection.expandToTag(el);
-  }
-  checkState() {
-    const on = !!this.api.selection.findParentTag('S');
-    this.button.classList.toggle(this.api.styles.inlineToolButtonActive, on);
-    return on;
-  }
+// ───────── 취소선·밑줄 도구 (Editor.js 에 없어서 직접. sanitize 에 태그를 넣어야 저장된다) ─────────
+/** 태그 하나로 감싸는 인라인 도구 (취소선 <s>, 밑줄 <u>). 편집기 기본에 없어서 직접 만든다 */
+function tagTool(tag, title, icon) {
+  return class {
+    static get isInline() { return true; }
+    static get title() { return title; }
+    static get sanitize() { return tag === 's' ? { s: {}, strike: {} } : { [tag]: {} }; }
+    constructor({ api }) { this.api = api; this.button = null; }
+    render() {
+      this.button = document.createElement('button');
+      this.button.type = 'button';
+      this.button.classList.add(this.api.styles.inlineToolButton);
+      this.button.innerHTML = icon;
+      return this.button;
+    }
+    surround(range) {
+      if (!range) return;
+      const found = this.api.selection.findParentTag(tag.toUpperCase());
+      if (found) { found.replaceWith(...found.childNodes); return; }
+      const el = document.createElement(tag);
+      el.appendChild(range.extractContents());
+      range.insertNode(el);
+      this.api.selection.expandToTag(el);
+    }
+    checkState() {
+      const on = !!this.api.selection.findParentTag(tag.toUpperCase());
+      this.button.classList.toggle(this.api.styles.inlineToolButtonActive, on);
+      return on;
+    }
+  };
 }
+const StrikeTool = tagTool('s', '취소선', '<span style="text-decoration:line-through;font-weight:600;font-size:14px">S</span>');
+const UnderlineTool = tagTool('u', '밑줄', '<span style="text-decoration:underline;font-weight:600;font-size:14px">U</span>');
 
 // ───────── 이미지 크기 (이미지 블록 ⠿ 메뉴). 값은 블록의 tunes.imageSize 로 저장된다 ─────────
 class ImageSizeTune {
@@ -711,16 +738,16 @@ function formatBarHtml() {
       <option value="h3">제목 3</option><option value="quote">인용</option><option value="code">코드 블록</option>
       <option value="unordered">글머리 목록</option><option value="ordered">번호 목록</option><option value="checklist">체크리스트</option>
     </select>
-    ${b('bold', '<b>굵게</b>', '굵게 (⌘B)')}${b('italic', '<i>기울임</i>', '기울임 (⌘I)')}${b('strike', '<s>취소선</s>', '취소선 (⌘⇧X)')}
-    ${b('code', '<code>코드</code>', '인라인 코드')}${b('mark', '<mark>형광펜</mark>', '형광펜')}${b('link', '링크', '링크 (⌘K)')}
+    ${b('bold', '<b>B</b>', '굵게 (⌘B)')}${b('italic', '<i style="font-family:Georgia,serif">I</i>', '기울임 (⌘I)')}${b('underline', '<u>U</u>', '밑줄 (⌘U)')}${b('strike', '<s>S</s>', '취소선 (⌘⇧X)')}
+    ${b('code', '<span class="mono">&lt;/&gt;</span>', '인라인 코드 (⌘⇧C)')}${b('mark', '<mark>A</mark>', '형광펜 (⌘⇧M)')}${b('link', '<svg class="wk-tb-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>', '링크 (⌘K)')}
     <span class="wk-tb-sep"></span>
-    ${b('unordered', '• 목록', '글머리 목록')}${b('ordered', '1. 번호', '번호 목록')}${b('checklist', '☑ 체크', '체크리스트')}
+    ${b('unordered', '<svg class="wk-tb-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6h10M10 12h10M10 18h10"/><circle cx="5" cy="6" r="1.2" fill="currentColor"/><circle cx="5" cy="12" r="1.2" fill="currentColor"/><circle cx="5" cy="18" r="1.2" fill="currentColor"/></svg>', '글머리 목록 (- 띄어쓰기)')}${b('ordered', '<svg class="wk-tb-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6h10M10 12h10M10 18h10M4 5l1.5-1v5M3.8 15.5a1.6 1.6 0 1 1 2.6 1.3L4 19h3"/></svg>', '번호 목록 (1. 띄어쓰기)')}${b('checklist', '<svg class="wk-tb-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="6" height="6" rx="1.5"/><path d="m4.8 7 1.2 1.2L8.4 5.8M13 7h7M3.5 14h6v6h-6zM13 17h7"/></svg>', '체크리스트 ([] 띄어쓰기)')}
     <select class="wk-tb-sel" id="wk-insert" title="블록 넣기" aria-label="블록 넣기">
       <option value="">넣기</option><option value="table">표</option><option value="delimiter">구분선</option>
       <option value="code">코드 블록</option><option value="quote">인용</option><option value="subpage">하위 페이지</option>
     </select>
     <span class="wk-tb-sep"></span>
-    ${b('image', '이미지', '이미지 넣기 (붙여넣기·끌어 놓기도 됩니다)')}
+    ${b('image', '<svg class="wk-tb-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m4 18 5-5 4 4 3-3 4 4"/></svg>', '이미지 넣기 (붙여넣기·끌어 놓기도 됩니다)')}
   </div>`;
 }
 
@@ -810,6 +837,7 @@ function bindFormatBar(editor) {
     const f = btn.dataset.fmt;
     if (f === 'bold' || f === 'italic') { if (restoreSelection()) document.execCommand(f); else setStatus('먼저 글자를 선택하세요'); }
     else if (f === 'strike') toggleInline('s');
+    else if (f === 'underline') toggleInline('u');
     else if (f === 'code') toggleInline('code', 'inline-code');
     else if (f === 'mark') toggleInline('mark', 'cdx-marker');
     else if (f === 'link') {
@@ -967,6 +995,7 @@ function createEditor(holder, cur, editable, sid) {
       },
       marker: { class: Marker, shortcut: 'CMD+SHIFT+M' },
       strike: { class: StrikeTool, shortcut: 'CMD+SHIFT+X' },
+      underline: { class: UnderlineTool, shortcut: 'CMD+U' },
       imageSize: ImageSizeTune,
       inlineCode: { class: InlineCode, shortcut: 'CMD+SHIFT+C' },
     },

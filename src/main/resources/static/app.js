@@ -1006,7 +1006,7 @@ function recentWikiPanel() {
   const pages = inCur(S.notes).filter(n => n.updatedAt).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 5);
   return `<section class="panel"><div class="panel-head"><h2>최근 위키</h2><span class="grow"></span><a class="small" href="#wiki">위키 →</a></div>
     ${pages.length ? pages.map(p => `<div class="recent-page" data-page="${esc(p.id)}"><span>${esc(p.icon || '📄')}</span>
-      <span class="t">${esc(p.title || '(제목 없음)')}</span> ${mixedTag(p.spaceId)}<span class="muted small">${timeAgo(p.updatedAt)}</span></div>`).join('')
+      <span class="t">${esc(p.title || '(제목 없음)')}</span> ${mixedTag(p.spaceId)}${isTeam(p.spaceId) && p.updatedBy ? avatar(p.updatedBy, true) : ''}<span class="muted small">${timeAgo(p.updatedAt)}</span></div>`).join('')
       : '<div class="empty">아직 페이지가 없습니다</div>'}</section>`;
 }
 
