@@ -133,13 +133,41 @@ function plainText(data) {
 }
 
 // ───────── 저장 ─────────
-/** 쓰던 내용을 바로 저장한다 (다른 페이지로 옮길 때, 창을 닫을 때, 로그아웃할 때) */
+// 자동 저장 규칙: 입력을 3초 멈추면 저장, 쉬지 않고 입력해도 최대 30초마다 한 번, 마지막 저장과 내용이 같으면 보내지 않는다.
+// 다른 페이지로 옮길 때·창을 닫을 때·로그아웃할 때는 기다리지 않고 바로 저장한다
+const SAVE_IDLE_MS = 3000;
+const SAVE_MAX_MS = 30000;
+let noteDirtySince = 0;     // 저장하지 않은 변경이 처음 생긴 때
+let noteCapturing = false;  // 최대 대기 시간이 지나 편집기 내용을 담는 중
+const savedSig = new Map(); // 페이지 id → 마지막으로 저장한 내용 (제목·아이콘·본문)
+// 편집기 출력의 "time" 은 저장할 때마다 바뀌므로 비교에서 뺀다
+const noteSig = p => JSON.stringify([p.title || '', p.icon || '', String(p.content || '').replace(/"time":\d+,?/, '')]);
+const rememberSaved = p => savedSig.set(p.id, noteSig(p));
+
+/** 쓰던 내용을 바로 저장한다. 바뀐 게 없으면 보내지 않는다 */
 function flushNote() {
   if (!noteTimer) return;
   clearTimeout(noteTimer);
   noteTimer = null;
+  noteDirtySince = 0;
   const cur = byId(S.notes, wikiEditorPage || UI.noteId);
-  if (cur) save('notes', cur);
+  if (!cur) return;
+  const sig = noteSig(cur);
+  if (savedSig.get(cur.id) === sig) { setStatus('변경 없음'); return; }
+  send('PUT', `${base(cur.spaceId)}/notes/${encodeURIComponent(cur.id)}`, cur, {
+    onOk: res => { if (res.version) cur.version = res.version; savedSig.set(cur.id, sig); },
+    onConflict: () => onConflict('notes', cur),
+  });
+}
+
+/** 편집기에 글자가 들어올 때마다: 쉬지 않고 30초 넘게 입력 중이면 지금까지를 담아 저장한다 */
+function noteTyping() {
+  if (!noteDirtySince) { noteDirtySince = Date.now(); return; }
+  if (noteCapturing || Date.now() - noteDirtySince < SAVE_MAX_MS) return;
+  const cur = byId(S.notes, wikiEditorPage);
+  if (!cur) return;
+  noteCapturing = true;
+  captureEditor(cur).then(flushNote).finally(() => { noteCapturing = false; });
 }
 window.addEventListener('pagehide', flushNote, { capture: true });
 /** 누가 언제 마지막으로 고쳤는지. 팀 공간이면 사람(아바타·이름), 내 공간이면 시간만 */
@@ -167,8 +195,9 @@ function touchPage(p) {
     meta.dataset.fresh = '1';
   }
   setStatus('입력 중…');
+  if (!noteDirtySince) noteDirtySince = Date.now();
   clearTimeout(noteTimer);
-  noteTimer = setTimeout(flushNote, 1500);
+  noteTimer = setTimeout(flushNote, Date.now() - noteDirtySince >= SAVE_MAX_MS ? 0 : SAVE_IDLE_MS);
 }
 function destroyEditor() {
   if (wikiEditor) {
@@ -985,6 +1014,7 @@ async function mountEditor(cur, editable) {
   if (!holder.isConnected || UI.noteId !== cur.id) return; // 그 사이 다른 페이지로 옮김
   holder.innerHTML = '';
   wikiEditorPage = cur.id;
+  if (!noteTimer) rememberSaved(cur); // 지금 서버에 있는 내용 (이후 바뀐 게 없으면 저장하지 않는다)
   const sid = cur.spaceId;
   let editor;
   try {
@@ -1000,6 +1030,7 @@ async function mountEditor(cur, editable) {
     attachMarkdown(holder, editor);
     attachBlockDrag(holder, editor);
     attachCaretFollow(holder);
+    holder.addEventListener('input', noteTyping);
     bindFormatBar(editor);
     const t = $('#note-title');
     if (t && !t.value && document.activeElement !== t) t.focus();
